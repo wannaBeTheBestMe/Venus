@@ -2,12 +2,18 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/select.h> // Added for non-blocking stdin
+#include <unistd.h>     // Added for STDIN_FILENO
 
 #define MAX_LEN 200
 
 void send_message(char *msg)
 {
-    uint32_t len = strlen(msg);
+    char buffer[MAX_LEN];
+    
+    // FIX 1: Add the newline back so the Wi-Fi bridge flushes immediately over MQTT
+    snprintf(buffer, sizeof(buffer), "%s\n", msg);
+    uint32_t len = strlen(buffer);
 
     uart_send(UART0, (len) & 0xFF);
     uart_send(UART0, (len >> 8) & 0xFF);
@@ -15,9 +21,11 @@ void send_message(char *msg)
     uart_send(UART0, (len >> 24) & 0xFF);
 
     for (uint32_t i = 0; i < len; i++)
-        uart_send(UART0, msg[i]);
+        uart_send(UART0, buffer[i]);
 
-    fprintf(stderr, "Sent: %s\n", msg);
+    // FIX 2: Force the terminal to draw the text instantly
+    fprintf(stderr, "Sent: %s", buffer);
+    fflush(stderr); 
 }
 
 int main(void)
@@ -35,7 +43,6 @@ int main(void)
     uint32_t len = 0;
     uint32_t bytes_read = 0;
     char buffer[MAX_LEN];
-
     char input[100];
 
     while (1)
@@ -45,7 +52,6 @@ int main(void)
         // =====================
         if (bytes_read < 4)
         {
-            // reading length
             while (uart_has_data(UART0) && bytes_read < 4)
             {
                 uint8_t byte = uart_recv(UART0);
@@ -58,6 +64,7 @@ int main(void)
                 if (len > MAX_LEN)
                 {
                     fprintf(stderr, "Invalid LEN: %u\n", len);
+                    fflush(stderr);
                     len = 0;
                     bytes_read = 0;
                 }
@@ -65,7 +72,6 @@ int main(void)
         }
         else
         {
-            // reading payload
             uint32_t payload_bytes = bytes_read - 4;
 
             while (uart_has_data(UART0) && payload_bytes < len)
@@ -77,24 +83,42 @@ int main(void)
             if (payload_bytes == len)
             {
                 buffer[len] = '\0';
+                
+                // Clean up any stray newlines from the sender for a pretty terminal
+                buffer[strcspn(buffer, "\r\n")] = 0; 
+                
                 fprintf(stderr, "Received: %s\n", buffer);
+                fflush(stderr); // Force instant update
 
-                // reset for next message
                 len = 0;
                 bytes_read = 0;
             }
         }
 
         // =====================
-        // SEND (non-blocking input)
+        // SEND (TRULY non-blocking input)
         // =====================
-        if (fgets(input, sizeof(input), stdin) != NULL)
+        
+        // FIX 3: Set up select() to peek at the keyboard without stopping the loop
+        fd_set readfds;
+        struct timeval tv;
+        FD_ZERO(&readfds);
+        FD_SET(STDIN_FILENO, &readfds);
+
+        tv.tv_sec = 0;
+        tv.tv_usec = 0; // A 0 timeout means "check instantly and keep moving"
+
+        // select() returns > 0 ONLY if you have pressed Enter
+        if (select(STDIN_FILENO + 1, &readfds, NULL, NULL, &tv) > 0)
         {
-            input[strcspn(input, "\n")] = 0;
-            send_message(input);
+            if (fgets(input, sizeof(input), stdin) != NULL)
+            {
+                input[strcspn(input, "\n")] = 0; // Strip it so send_message can safely re-format it
+                send_message(input);
+            }
         }
 
-        sleep_msec(10); // small delay
+        sleep_msec(10); // Prevent CPU maxing
     }
 
     pynq_destroy();
