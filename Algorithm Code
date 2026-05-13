@@ -1,0 +1,444 @@
+#include <libpynq.h>
+#include <stepper.h>
+#include <time.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* --------------------------------------------------
+   COLOR SENSOR PINS
+   -------------------------------------------------- */
+#define S0 IO_AR4
+#define S1 IO_AR5
+#define S2 IO_AR6
+#define S3 IO_AR7
+#define SENSOR_OUT IO_AR8
+
+/* --------------------------------------------------
+   COLOR THRESHOLDS
+   Adjust these using calibration
+   -------------------------------------------------- */
+#define RED_MIN    25
+#define RED_MAX    72
+#define GREEN_MIN  30
+#define GREEN_MAX  90
+#define BLUE_MIN   25
+#define BLUE_MAX   70
+
+/* --------------------------------------------------
+   MOVEMENT CONSTANTS
+   -------------------------------------------------- */
+#define FORWARD_UNIT_STEPS   250
+#define TURN_90_STEPS        675
+#define TURN_180_STEPS       1500
+#define MOVE_SPEED           9000
+#define TURN_SPEED           4000
+
+/* --------------------------------------------------
+   MAP CONSTANTS
+   -------------------------------------------------- */
+#define CELL_SIZE_CM         3.0f
+#define MAX_BOUNDARY_POINTS  1000
+#define MAX_ROWS             200
+#define MAX_COLS             200
+
+/* --------------------------------------------------
+   STATE CONSTANTS
+   -------------------------------------------------- */
+#define STATE_SEARCH_BOUNDARY   1
+#define STATE_ALIGN_BOUNDARY    2
+#define STATE_TRACE_BOUNDARY    3
+#define STATE_PREPARE_GRID      4
+#define STATE_DONE              5
+
+/* --------------------------------------------------
+   DIRECTION CONSTANTS
+   -------------------------------------------------- */
+#define DIR_NORTH  0
+#define DIR_EAST   1
+#define DIR_SOUTH  2
+#define DIR_WEST   3
+
+/* --------------------------------------------------
+   DATA STRUCTURES
+   -------------------------------------------------- */
+typedef struct {
+    int x;
+    int y;
+} Position;
+
+typedef struct {
+    char name[10];
+    Position pos;
+    Position initialPos;
+    int direction;
+    int state;
+} Robot;
+
+typedef struct {
+    int row;
+    int col;
+    int state;
+    char label[20];
+} Cell;
+
+typedef struct {
+    int boundaryX[MAX_BOUNDARY_POINTS];
+    int boundaryY[MAX_BOUNDARY_POINTS];
+    int boundaryCount;
+
+    int minX, maxX;
+    int minY, maxY;
+    int width, height;
+
+    int rows, cols;
+    Cell cells[MAX_ROWS][MAX_COLS];
+} GridMap;
+
+/* --------------------------------------------------
+   UTILITY
+   -------------------------------------------------- */
+static void delay_ms(int ms) {
+    struct timespec ts = {
+        .tv_sec = ms / 1000,
+        .tv_nsec = (ms % 1000) * 1000000L
+    };
+    nanosleep(&ts, NULL);
+}
+
+static uint32_t pulseIn_LOW(int pin) {
+    const uint32_t TIMEOUT_US = 1000000;
+    struct timespec t0, t1;
+    uint32_t elapsed = 0;
+
+    while (gpio_get_level(pin) == GPIO_LEVEL_LOW) {
+        elapsed++;
+        if (elapsed > TIMEOUT_US) return 0;
+    }
+
+    elapsed = 0;
+    while (gpio_get_level(pin) == GPIO_LEVEL_HIGH) {
+        elapsed++;
+        if (elapsed > TIMEOUT_US) return 0;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    while (gpio_get_level(pin) == GPIO_LEVEL_LOW) {}
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+
+    return (uint32_t)((t1.tv_sec - t0.tv_sec) * 1000000UL +
+                      (t1.tv_nsec - t0.tv_nsec) / 1000UL);
+}
+
+static long map_value(long x, long in_min, long in_max, long out_min, long out_max) {
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+static int clamp255(long v) {
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return (int)v;
+}
+
+/* --------------------------------------------------
+   ROBOT SETUP
+   -------------------------------------------------- */
+void init_robot(Robot *r, const char *name, int x, int y, int direction, int state) {
+    strcpy(r->name, name);
+    r->pos.x = x;
+    r->pos.y = y;
+    r->initialPos = r->pos;
+    r->direction = direction;
+    r->state = state;
+}
+
+/* --------------------------------------------------
+   LOW-LEVEL MOTOR ACTIONS
+   -------------------------------------------------- */
+void move_forward_unit(Robot *r, int units) {
+    stepper_set_speed(MOVE_SPEED, MOVE_SPEED);
+    stepper_steps(units * FORWARD_UNIT_STEPS, units * FORWARD_UNIT_STEPS);
+    sleep_msec(500);
+
+    if (r->direction == DIR_NORTH) {
+        r->pos.y += units;
+    }
+    else if (r->direction == DIR_SOUTH) {
+        r->pos.y -= units;
+    }
+    else if (r->direction == DIR_EAST) {
+        r->pos.x += units;
+    }
+    else if (r->direction == DIR_WEST) {
+        r->pos.x -= units;
+    }
+}
+
+void turn_left_90(Robot *r) {
+    stepper_set_speed(TURN_SPEED, TURN_SPEED);
+    stepper_steps(TURN_90_STEPS, -TURN_90_STEPS);
+    sleep_msec(500);
+
+    if (r->direction == DIR_NORTH) r->direction = DIR_WEST;
+    else if (r->direction == DIR_WEST) r->direction = DIR_SOUTH;
+    else if (r->direction == DIR_SOUTH) r->direction = DIR_EAST;
+    else if (r->direction == DIR_EAST) r->direction = DIR_NORTH;
+}
+
+void turn_right_90(Robot *r) {
+    stepper_set_speed(TURN_SPEED, TURN_SPEED);
+    stepper_steps(-TURN_90_STEPS, TURN_90_STEPS);
+    sleep_msec(500);
+
+    if (r->direction == DIR_NORTH) r->direction = DIR_EAST;
+    else if (r->direction == DIR_EAST) r->direction = DIR_SOUTH;
+    else if (r->direction == DIR_SOUTH) r->direction = DIR_WEST;
+    else if (r->direction == DIR_WEST) r->direction = DIR_NORTH;
+}
+
+void turn_180(Robot *r) {
+    stepper_set_speed(TURN_SPEED, TURN_SPEED);
+    stepper_steps(TURN_180_STEPS, -TURN_180_STEPS);
+    sleep_msec(500);
+
+    if (r->direction == DIR_NORTH) r->direction = DIR_SOUTH;
+    else if (r->direction == DIR_SOUTH) r->direction = DIR_NORTH;
+    else if (r->direction == DIR_EAST) r->direction = DIR_WEST;
+    else if (r->direction == DIR_WEST) r->direction = DIR_EAST;
+}
+
+void stop_robot(void) {
+    stepper_steps(0, 0);
+}
+
+/* --------------------------------------------------
+   COLOR-BASED BOUNDARY DETECTION
+   Assumption: black marks the boundary
+   -------------------------------------------------- */
+int detect_black_boundary(void) {
+    long freq;
+    int r, g, b;
+
+    gpio_set_level(S2, GPIO_LEVEL_LOW);
+    gpio_set_level(S3, GPIO_LEVEL_LOW);
+    freq = (long)pulseIn_LOW(SENSOR_OUT);
+    r = clamp255(map_value(freq, RED_MIN, RED_MAX, 255, 0));
+    delay_ms(10);
+
+    gpio_set_level(S2, GPIO_LEVEL_HIGH);
+    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+    freq = (long)pulseIn_LOW(SENSOR_OUT);
+    g = clamp255(map_value(freq, GREEN_MIN, GREEN_MAX, 255, 0));
+    delay_ms(10);
+
+    gpio_set_level(S2, GPIO_LEVEL_LOW);
+    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+    freq = (long)pulseIn_LOW(SENSOR_OUT);
+    b = clamp255(map_value(freq, BLUE_MIN, BLUE_MAX, 255, 0));
+    delay_ms(10);
+
+    printf("R=%d G=%d B=%d\n", r, g, b);
+
+    if (r < 150 && g < 150 && b < 150) {
+        return 1;
+    }
+
+    return 0;
+}
+
+/* --------------------------------------------------
+   PLACEHOLDER OBSTACLE DETECTION
+   Replace with real sensor later
+   -------------------------------------------------- */
+int detect_obstacle(void) {
+    return 0;
+}
+
+/* --------------------------------------------------
+   GO AROUND OBJECT
+   -------------------------------------------------- */
+void go_around_object(Robot *r) {
+    turn_left_90(r);
+    move_forward_unit(r, 4);
+
+    turn_right_90(r);
+    move_forward_unit(r, 4);
+
+    turn_right_90(r);
+    move_forward_unit(r, 4);
+
+    turn_left_90(r);
+}
+
+/* --------------------------------------------------
+   STEP 1:
+   SEARCH FOR BOUNDARY
+   -------------------------------------------------- */
+void search_for_boundary(Robot *r1, Robot *r2) {
+    printf("%s searching for boundary...\n", r1->name);
+    printf("%s remains idle at (%d, %d)\n", r2->name, r2->pos.x, r2->pos.y);
+
+    if (detect_black_boundary()) {
+        stop_robot();
+        r1->state = STATE_ALIGN_BOUNDARY;
+        printf("Boundary detected.\n");
+    }
+    else if (detect_obstacle()) {
+        printf("Obstacle detected. Going around it...\n");
+        go_around_object(r1);
+    }
+    else {
+        move_forward_unit(r1, 1);
+    }
+}
+
+/* --------------------------------------------------
+   STEP 2:
+   ALIGN AND TRACE BOUNDARY
+   -------------------------------------------------- */
+void orient_parallel_to_boundary(Robot *r1) {
+    turn_left_90(r1);
+    r1->state = STATE_TRACE_BOUNDARY;
+    printf("%s aligned parallel to boundary.\n", r1->name);
+}
+
+int returned_to_start(Position start, Position current) {
+    if (start.x == current.x && start.y == current.y) {
+        return 1;
+    }
+    return 0;
+}
+
+void trace_boundary(Robot *r1, GridMap *map) {
+    static int started = 0;
+    static Position startPos;
+    static int firstLoop = 1;
+
+    if (!started) {
+        startPos = r1->pos;
+        map->boundaryCount = 0;
+        started = 1;
+        firstLoop = 1;
+    }
+
+    move_forward_unit(r1, 1);
+
+    if (map->boundaryCount < MAX_BOUNDARY_POINTS) {
+        map->boundaryX[map->boundaryCount] = r1->pos.x;
+        map->boundaryY[map->boundaryCount] = r1->pos.y;
+        map->boundaryCount++;
+    }
+
+    if (map->boundaryCount > 20) {
+        firstLoop = 0;
+    }
+
+    if (!firstLoop && returned_to_start(startPos, r1->pos)) {
+        stop_robot();
+        r1->state = STATE_PREPARE_GRID;
+        started = 0;
+        printf("Boundary traced completely.\n");
+        return;
+    }
+
+    if (!detect_black_boundary()) {
+        turn_right_90(r1);
+    }
+}
+
+/* --------------------------------------------------
+   STEP 3:
+   BUILD SIMPLE GRID MAP
+   -------------------------------------------------- */
+void prepare_grid_map(Robot *r1, Robot *r2, GridMap *map) {
+    int i, row, col;
+
+    map->minX = map->boundaryX[0];
+    map->maxX = map->boundaryX[0];
+    map->minY = map->boundaryY[0];
+    map->maxY = map->boundaryY[0];
+
+    for (i = 1; i < map->boundaryCount; i++) {
+        if (map->boundaryX[i] < map->minX) map->minX = map->boundaryX[i];
+        if (map->boundaryX[i] > map->maxX) map->maxX = map->boundaryX[i];
+        if (map->boundaryY[i] < map->minY) map->minY = map->boundaryY[i];
+        if (map->boundaryY[i] > map->maxY) map->maxY = map->boundaryY[i];
+    }
+
+    map->width = map->maxX - map->minX;
+    map->height = map->maxY - map->minY;
+
+    map->rows = map->height / CELL_SIZE_CM;
+    map->cols = map->width / CELL_SIZE_CM;
+
+    if (map->rows > MAX_ROWS) map->rows = MAX_ROWS;
+    if (map->cols > MAX_COLS) map->cols = MAX_COLS;
+
+    for (row = 0; row < map->rows; row++) {
+        for (col = 0; col < map->cols; col++) {
+            map->cells[row][col].row = row;
+            map->cells[row][col].col = col;
+            map->cells[row][col].state = 0;
+            strcpy(map->cells[row][col].label, "");
+        }
+    }
+
+    printf("Boundary dimensions: width = %d, height = %d\n", map->width, map->height);
+    printf("R1 relative position: (%d, %d)\n", r1->pos.x - map->minX, r1->pos.y - map->minY);
+    printf("R2 relative position: (%d, %d)\n", r2->pos.x - map->minX, r2->pos.y - map->minY);
+    printf("Grid created: %d rows x %d cols, cell size = %.2f cm\n",
+           map->rows, map->cols, CELL_SIZE_CM);
+
+    r1->state = STATE_DONE;
+}
+
+/* --------------------------------------------------
+   MAIN
+   -------------------------------------------------- */
+int main(void) {
+    pynq_init();
+
+    stepper_init();
+    stepper_enable();
+
+    gpio_set_direction(S0, GPIO_DIR_OUTPUT);
+    gpio_set_direction(S1, GPIO_DIR_OUTPUT);
+    gpio_set_direction(S2, GPIO_DIR_OUTPUT);
+    gpio_set_direction(S3, GPIO_DIR_OUTPUT);
+    gpio_set_direction(SENSOR_OUT, GPIO_DIR_INPUT);
+
+    gpio_set_level(S0, GPIO_LEVEL_HIGH);
+    gpio_set_level(S1, GPIO_LEVEL_LOW);
+
+    Robot R1, R2;
+    GridMap map;
+
+    init_robot(&R1, "R1", 0, 0, DIR_EAST, STATE_SEARCH_BOUNDARY);
+    init_robot(&R2, "R2", 0, 0, DIR_EAST, 0);
+
+    while (1) {
+        if (R1.state == STATE_SEARCH_BOUNDARY) {
+            search_for_boundary(&R1, &R2);
+        }
+        else if (R1.state == STATE_ALIGN_BOUNDARY) {
+            orient_parallel_to_boundary(&R1);
+        }
+        else if (R1.state == STATE_TRACE_BOUNDARY) {
+            trace_boundary(&R1, &map);
+        }
+        else if (R1.state == STATE_PREPARE_GRID) {
+            prepare_grid_map(&R1, &R2, &map);
+        }
+        else if (R1.state == STATE_DONE) {
+            printf("Steps 1 to 3 complete.\n");
+            break;
+        }
+
+        sleep_msec(100);
+    }
+
+    stepper_destroy();
+    pynq_destroy();
+    return 0;
+}
