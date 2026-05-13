@@ -145,9 +145,7 @@ int main(void)
     stepper_init();
     stepper_enable();
 
-    // -----------------------------
     // UART setup
-    // -----------------------------
     switchbox_set_pin(IO_AR0, SWB_UART0_RX);
     switchbox_set_pin(IO_AR1, SWB_UART0_TX);
 
@@ -174,21 +172,11 @@ int main(void)
     {
         if (uart_has_data(UART0))
         {
-            // -----------------------------
             // Read message
-            // -----------------------------
+
             read_uart_message(UART0, MSG);
 
             fprintf(stderr, "MSG = %s\n", MSG);
-
-            // =====================================================
-            // COMMAND FORMAT:
-            //
-            // MOVE,X,Y
-            //
-            // Example:
-            // MOVE,3,5
-            // =====================================================
 
             if (strncmp(MSG, "MOVE", 4) == 0)
             {
@@ -310,26 +298,121 @@ int main(void)
                 } while (running);
             }
 
+            else if(strcmp(MSG, "LBLACK") == 0)
+            {
+                int running = 1;
+
+                do
+                {
+                    stepper_set_speed(7000, 7000);
+
+                    stepper_steps(100, 100);
+
+                    sleep_msec(10);
+
+                    long freq;
+                    int r, g, b;
+
+                    gpio_set_level(S2, GPIO_LEVEL_LOW);
+                    gpio_set_level(S3, GPIO_LEVEL_LOW);
+
+                    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+                    r = clamp255(map(freq, RED_MIN, RED_MAX, 255, 0));
+
+                    delay_ms(10);
+
+                    gpio_set_level(S2, GPIO_LEVEL_HIGH);
+                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+
+                    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+                    g = clamp255(map(freq, GREEN_MIN, GREEN_MAX, 255, 0));
+
+                    delay_ms(10);
+
+                    gpio_set_level(S2, GPIO_LEVEL_LOW);
+                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+
+                    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+                    b = clamp255(map(freq, BLUE_MIN, BLUE_MAX, 255, 0));
+
+                    delay_ms(10);
+
+                    printf("R=%d G=%d B=%d\n", r, g, b);
+
+                    if ((r < 150 && g < 150 && b < 150))
+                    {
+                        running = 0;
+                        stepper_steps(675, -675);
+                        sleep_msec(2000);
+                        fprintf(stderr, "BLACK DETECTED\n");
+                    }
+            }
+
+           else if(strcmp(MSG, "RBLACK") == 0)
+            {
+                int running = 1;
+
+                do
+                {
+                    stepper_set_speed(7000, 7000);
+
+                    stepper_steps(100, 100);
+
+                    sleep_msec(10);
+
+                    long freq;
+                    int r, g, b;
+
+                    gpio_set_level(S2, GPIO_LEVEL_LOW);
+                    gpio_set_level(S3, GPIO_LEVEL_LOW);
+
+                    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+                    r = clamp255(map(freq, RED_MIN, RED_MAX, 255, 0));
+
+                    delay_ms(10);
+
+                    gpio_set_level(S2, GPIO_LEVEL_HIGH);
+                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+
+                    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+                    g = clamp255(map(freq, GREEN_MIN, GREEN_MAX, 255, 0));
+
+                    delay_ms(10);
+
+                    gpio_set_level(S2, GPIO_LEVEL_LOW);
+                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+
+                    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+                    b = clamp255(map(freq, BLUE_MIN, BLUE_MAX, 255, 0));
+
+                    delay_ms(10);
+
+                    printf("R=%d G=%d B=%d\n", r, g, b);
+
+                    if ((r < 150 && g < 150 && b < 150))
+                    {
+                        running = 0;
+                        stepper_steps(-675, 675);
+                        sleep_msec(2000);
+                        fprintf(stderr, "BLACK DETECTED\n");
+                    }
+            }
+
             else if(strcmp(MSG, "LGOAROUND") == 0)
             {
                 // going around object//
-                int running = 1;
-                do
-                {
                     stepper_set_speed(9000, 9000);
 
                     stepper_steps(100, 100);
 
                     sleep_msec(50);
 
-                    if (uart_has_data(UART0))
-                    {
-                        char STOP_MSG[MAX_MSG_LEN];
-
-                        read_uart_message(UART0, STOP_MSG);
-
-                        if (strcmp(STOP_MSG, "TURN") == 0)
-                        {
                             // turn left
                             stepper_steps(675, -675);
                             sleep_msec(2000);
@@ -358,17 +441,49 @@ int main(void)
                             stepper_steps(675, -675);
                             sleep_msec(2000);
 
-                        }
+            }
 
-                        if (strcmp(STOP_MSG, "STOP") == 0)
-                        {
-                            running = 0;
-                        }
-                    }
+            else if(strcmp(MSG, "RGOAROUND") == 0)
+            {
+                // going around object//
+                    stepper_set_speed(9000, 9000);
 
-                } while (running);
+                    stepper_steps(100, 100);
+
+                    sleep_msec(50);
+
+                            // turn right
+                            stepper_steps(-675, 675);
+                            sleep_msec(2000);
+
+                            // move forward//
+                            stepper_steps(1000, 1000);
+                            sleep_msec(2000);
+                            
+                            //turn left
+                            stepper_steps(675, -675);
+                            sleep_msec(2000);
+
+                            // move forward//
+                            stepper_steps(1000, 1000);
+                            sleep_msec(2000);
+
+                             //turn left
+                            stepper_steps(675, -675);
+                            sleep_msec(2000);
+
+                            // move forward//
+                            stepper_steps(1000, 1000);
+                            sleep_msec(2000);
+
+                            // turn right
+                            stepper_steps(-675, 675);
+                            sleep_msec(2000);
 
             }
+
+
+            
 
             else
             {
