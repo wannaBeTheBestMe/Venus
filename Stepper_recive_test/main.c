@@ -250,11 +250,10 @@ int main(void)
 
                 do
                 {
-                    stepper_set_speed(7000, 7000);
+                    stepper_set_speed(9000, 9000);
 
-                    stepper_steps(100, 100);
+                    stepper_steps(10000, 10000);
 
-                    sleep_msec(10);
 
                     long freq;
                     int r, g, b;
@@ -266,7 +265,6 @@ int main(void)
 
                     r = clamp255(map(freq, RED_MIN, RED_MAX, 255, 0));
 
-                    delay_ms(10);
 
                     gpio_set_level(S2, GPIO_LEVEL_HIGH);
                     gpio_set_level(S3, GPIO_LEVEL_HIGH);
@@ -274,9 +272,6 @@ int main(void)
                     freq = (long)pulseIn_LOW(SENSOR_OUT);
 
                     g = clamp255(map(freq, GREEN_MIN, GREEN_MAX, 255, 0));
-
-                    delay_ms(10);
-
                     gpio_set_level(S2, GPIO_LEVEL_LOW);
                     gpio_set_level(S3, GPIO_LEVEL_HIGH);
 
@@ -284,7 +279,6 @@ int main(void)
 
                     b = clamp255(map(freq, BLUE_MIN, BLUE_MAX, 255, 0));
 
-                    delay_ms(10);
 
                     printf("R=%d G=%d B=%d\n", r, g, b);
 
@@ -304,9 +298,9 @@ int main(void)
 
                 do
                 {
-                    stepper_set_speed(7000, 7000);
+                    stepper_set_speed(9000, 9000);
 
-                    stepper_steps(100, 100);
+                    stepper_steps(10000, 10000);
 
                     sleep_msec(10);
 
@@ -345,10 +339,15 @@ int main(void)
                     if ((r < 150 && g < 150 && b < 150))
                     {
                         running = 0;
+
                         stepper_steps(675, -675);
+
                         sleep_msec(2000);
+
                         fprintf(stderr, "BLACK DETECTED\n");
                     }
+
+                } while (running);
             }
 
            else if(strcmp(MSG, "RBLACK") == 0)
@@ -357,9 +356,9 @@ int main(void)
 
                 do
                 {
-                    stepper_set_speed(7000, 7000);
+                    stepper_set_speed(9000, 9000);
 
-                    stepper_steps(100, 100);
+                    stepper_steps(10000, 10000);
 
                     sleep_msec(10);
 
@@ -398,10 +397,15 @@ int main(void)
                     if ((r < 150 && g < 150 && b < 150))
                     {
                         running = 0;
+
                         stepper_steps(-675, 675);
+
                         sleep_msec(2000);
+
                         fprintf(stderr, "BLACK DETECTED\n");
                     }
+
+                } while (running);
             }
 
             else if(strcmp(MSG, "LGOAROUND") == 0)
