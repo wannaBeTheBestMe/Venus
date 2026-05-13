@@ -235,7 +235,7 @@ int main(void)
                 }
             }
 
-            else if (strcmp(MSG, "PRESET1") == 0)
+            else if (strcmp(MSG, "UTURN") == 0)
             {
                 //MOVE FORWARD//
 
@@ -256,7 +256,7 @@ int main(void)
                 sleep_msec(2000);
             }
 
-            else if (strcmp(MSG, "PRESET2") == 0)
+            else if (strcmp(MSG, "STOPBLACK") == 0)
             {
                 int running = 1;
 
@@ -310,7 +310,7 @@ int main(void)
                 } while (running);
             }
 
-            else if(strcmp(MSG, "PRESET3") == 0)
+            else if(strcmp(MSG, "LGOAROUND") == 0)
             {
                 // going around object//
                 int running = 1;
