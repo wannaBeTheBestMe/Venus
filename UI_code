@@ -1,0 +1,390 @@
+import sys
+import math
+import paho.mqtt.client as mqtt
+from datetime import datetime
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsScene, QGraphicsView, 
+                             QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsTextItem,
+                             QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, 
+                             QTextBrowser, QListWidget, QPushButton, QFormLayout, 
+                             QFileDialog, QMessageBox) 
+from PyQt6.QtGui import QBrush, QPen, QColor, QFont, QPainter, QPixmap, QPolygonF
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF
+
+# --- CONFIGURATION ---
+SCALE = 4 
+ROBOT_SIZE = 10 * SCALE 
+
+STYLESHEET = """
+QMainWindow { background-color: #121212; }
+QGroupBox {
+    background-color: #2D2D2D;
+    border: 1px solid #444444;
+    border-radius: 12px;
+    margin-top: 1ex;
+    font-weight: bold;
+    color: #DDDDDD;
+}
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 3px; }
+QLabel { color: #AAAAAA; background-color: transparent; }
+QTextBrowser, QListWidget {
+    background-color: #1e1e1e;
+    border: 1px solid #444444;
+    border-radius: 8px;
+    color: #CCCCCC;
+    font-family: 'Menlo', 'Monaco', monospace;
+    font-size: 11px;
+}
+QPushButton {
+    background-color: #3D3D3D;
+    color: white;
+    border-radius: 8px;
+    border: 1px solid #555555;
+    padding: 6px;
+    font-size: 11px;
+}
+QPushButton:hover { background-color: #4D4D4D; }
+"""
+
+# --- DATA MODELS ---
+class RockSample(QGraphicsRectItem):
+    def __init__(self, x, y, size_cm, color_str, temp):
+        display_size = size_cm * SCALE 
+        super().__init__(0, 0, display_size, display_size)
+        self.setPos(x * SCALE - (display_size/2), y * SCALE - (display_size/2))
+        self.setBrush(QBrush(QColor(color_str)))
+        self.setPen(QPen(Qt.GlobalColor.black))
+        self.setToolTip(f"Rock Sample\nColor: {color_str}\nSize: {size_cm}cm\nTemp: {temp}°C")
+
+# --- MQTT WORKER ---
+class MQTTWorker(QThread):
+    message_received = pyqtSignal(str, str)
+    
+    def __init__(self, robot_name, username, password, topic): 
+        super().__init__()
+        self.robot_name = robot_name
+        self.username = username
+        self.password = password
+        self.topic = topic
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self.client.username_pw_set(self.username, self.password)
+        
+    def run(self):
+        BROKER = "mqtt.ics.ele.tue.nl"
+        def on_message(client, userdata, msg):
+            payload = msg.payload.decode("utf-8")
+            self.message_received.emit(self.robot_name, payload)
+        self.client.on_message = on_message
+        self.client.connect(BROKER, 1883, 60)
+        self.client.subscribe(self.topic) 
+        self.client.loop_forever()
+
+    def publish_message(self, target_topic, payload):
+        self.client.publish(target_topic, payload)
+
+# --- THE PRO DASHBOARD ---
+class VenusDashboard(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Venus Exploration Ground Station")
+        self.resize(1300, 1000)
+        self.setStyleSheet(STYLESHEET)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+
+        left_col = QWidget()
+        left_layout = QVBoxLayout(left_col)
+        main_layout.addWidget(left_col, stretch=3)
+
+        right_col = QWidget()
+        right_layout = QVBoxLayout(right_col)
+        main_layout.addWidget(right_col, stretch=1)
+
+        self.setup_map_panel(left_layout)
+        self.setup_log_panel(left_layout)
+        self.setup_telemetry_panel(right_layout)
+        self.setup_findings_panel(right_layout)
+        self.setup_controls_panel(right_layout)
+
+        self.timer41 = QTimer()
+        self.timer41.timeout.connect(lambda: self.set_offline("Robot41"))
+        self.timer80 = QTimer()
+        self.timer80.timeout.connect(lambda: self.set_offline("Robot80"))
+
+        self.workerA = MQTTWorker("Robot41", "robot_41_1", "t7gIhbJF", "/pynqbridge/41/send")
+        self.workerB = MQTTWorker("Robot80", "robot_80_1", "OQfY8Km2", "/pynqbridge/80/send")
+        
+        self.workerA.message_received.connect(self.handle_message)
+        self.workerB.message_received.connect(self.handle_message)
+        self.workerA.start()
+        self.workerB.start()
+
+    def setup_map_panel(self, parent_layout):
+        group = QGroupBox("Explore Venus")
+        layout = QVBoxLayout(group)
+        self.scene = QGraphicsScene(-150*SCALE, -150*SCALE, 300*SCALE, 300*SCALE)
+        self.view = QGraphicsView(self.scene)
+        self.view.setBackgroundBrush(QBrush(QColor("#1e1e1e")))
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setStyleSheet("border-radius: 8px; border: none;")
+        layout.addWidget(self.view)
+        parent_layout.addWidget(group, stretch=2)
+        self.draw_guides()
+        self.initialize_robots()
+
+    def setup_log_panel(self, parent_layout):
+        group = QGroupBox("Command Center Logs")
+        layout = QVBoxLayout(group)
+        self.log_widget = QTextBrowser()
+        layout.addWidget(self.log_widget)
+        parent_layout.addWidget(group, stretch=1)
+
+    def setup_telemetry_panel(self, parent_layout):
+        group = QGroupBox("Robot Telemetry")
+        layout = QVBoxLayout(group)
+        
+        self.status_41_label = QLabel("OFFLINE")
+        self.status_41_label.setStyleSheet("color: #777; font-weight: bold;")
+        self.pos_41_label = QLabel("(---, ---)")
+        layout.addWidget(QLabel("<b>ID: 41 (Blue)</b>"))
+        layout.addWidget(self.status_41_label)
+        layout.addWidget(self.pos_41_label)
+
+        layout.addWidget(QLabel("<br><b>ID: 80 (Green)</b>"))
+        self.status_80_label = QLabel("OFFLINE")
+        self.status_80_label.setStyleSheet("color: #777; font-weight: bold;")
+        self.pos_80_label = QLabel("(---, ---)")
+        layout.addWidget(self.status_80_label)
+        layout.addWidget(self.pos_80_label)
+        
+        parent_layout.addWidget(group, stretch=2)
+
+    def setup_findings_panel(self, parent_layout):
+        group = QGroupBox("Scientific Discoveries")
+        layout = QVBoxLayout(group)
+        self.findings_list = QListWidget()
+        layout.addWidget(self.findings_list)
+        parent_layout.addWidget(group, stretch=2)
+
+    def setup_controls_panel(self, parent_layout):
+        group = QGroupBox("Mission Control")
+        layout = QVBoxLayout(group)
+        
+        btn_fit = QPushButton("Zoom to Fit")
+        btn_fit.clicked.connect(self.zoom_to_fit)
+        layout.addWidget(btn_fit)
+
+        btn_save = QPushButton("Export Map Image")
+        btn_save.clicked.connect(self.export_map)
+        layout.addWidget(btn_save)
+
+        btn_clear = QPushButton("Clear Mission Data")
+        btn_clear.clicked.connect(self.clear_all)
+        layout.addWidget(btn_clear)
+        
+        parent_layout.addWidget(group, stretch=1)
+
+    def draw_guides(self):
+        grid_pen = QPen(QColor(100, 100, 100, 60))
+        for i in range(-150, 151, 10):
+            self.scene.addLine(i*SCALE, -150*SCALE, i*SCALE, 150*SCALE, grid_pen)
+            self.scene.addLine(-150*SCALE, i*SCALE, 150*SCALE, i*SCALE, grid_pen)
+        origin_pen = QPen(QColor("yellow"), 2)
+        self.scene.addLine(-20, 0, 20, 0, origin_pen)
+        self.scene.addLine(0, -20, 0, 20, origin_pen)
+        label = QGraphicsTextItem("LANDING SITE")
+        label.setDefaultTextColor(QColor("yellow"))
+        label.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+        label.setPos(5, 5)
+        self.scene.addItem(label)
+        self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def initialize_robots(self):
+        self.robot41_marker = self.scene.addEllipse(0, 0, ROBOT_SIZE, ROBOT_SIZE, QPen(Qt.GlobalColor.white), QBrush(QColor("blue")))
+        self.robot80_marker = self.scene.addEllipse(0, 0, ROBOT_SIZE, ROBOT_SIZE, QPen(Qt.GlobalColor.white), QBrush(QColor("green")))
+        self.robot41_marker.setPos(-ROBOT_SIZE/2, -ROBOT_SIZE/2)
+        self.robot80_marker.setPos(-ROBOT_SIZE/2, -ROBOT_SIZE/2)
+        
+        # --- NEW: Array to store the mapping hits ---
+        self.tape_hits = []
+
+    def draw_arena_boundary(self):
+        try:
+            p1, p2, p3 = self.tape_hits[0], self.tape_hits[1], self.tape_hits[2]
+            KNOWN_SIZE = 150 * SCALE
+
+            # 1. Find the straight-line distance across the arena (Hit 1 to Hit 3)
+            dx = p3[0] - p1[0]
+            dy = p3[1] - p1[1]
+            dist = math.hypot(dx, dy)
+            if dist == 0: return
+
+            # 2. Calculate the exact tilt angle of the arena walls
+            # Math: The projection of the diagonal onto the wall normal MUST equal the known size
+            # We use min() to clamp it to 1.0. This prevents a math crash if wheel slip 
+            # makes the robot think it drove less than 150cm.
+            cos_val = min(1.0, KNOWN_SIZE / dist) 
+            offset_angle = math.acos(cos_val)
+            base_angle = math.atan2(dy, dx)
+
+            # The true angle of Wall 1
+            theta = base_angle - offset_angle
+
+            # 3. Create unit vectors for the walls based on the true tilt
+            u_x, u_y = math.cos(theta), math.sin(theta)       # Vector parallel to Wall 1
+            v_x, v_y = -math.sin(theta), math.cos(theta)      # Vector perpendicular to Wall 1
+
+            # 4. Find Corner 1 (Intersection of Wall 1 and Wall 2)
+            # We project the vector between P1 and P2 to perfectly snap the corner
+            dp = (p1[0] - p2[0]) * v_x + (p1[1] - p2[1]) * v_y
+            c1_x = p2[0] + dp * v_x
+            c1_y = p2[1] + dp * v_y
+
+            # 5. Build the exact 150x150 square
+            # We test all 4 possible quadrants around the corner and pick the one 
+            # whose center is closest to the midpoint of the arena to ensure we draw inward.
+            mid_x, mid_y = (p1[0] + p3[0]) / 2, (p1[1] + p3[1]) / 2
+            best_dist = float('inf')
+            best_poly = None
+
+            for sign_u in [1, -1]:
+                for sign_v in [1, -1]:
+                    center_x = c1_x + (sign_u * KNOWN_SIZE * u_x / 2) + (sign_v * KNOWN_SIZE * v_x / 2)
+                    center_y = c1_y + (sign_u * KNOWN_SIZE * u_y / 2) + (sign_v * KNOWN_SIZE * v_y / 2)
+                    
+                    test_dist = math.hypot(center_x - mid_x, center_y - mid_y)
+                    if test_dist < best_dist:
+                        best_dist = test_dist
+                        best_poly = QPolygonF([
+                            QPointF(c1_x, c1_y),
+                            QPointF(c1_x + sign_u * KNOWN_SIZE * u_x, c1_y + sign_u * KNOWN_SIZE * u_y),
+                            QPointF(c1_x + sign_u * KNOWN_SIZE * u_x + sign_v * KNOWN_SIZE * v_x, c1_y + sign_u * KNOWN_SIZE * u_y + sign_v * KNOWN_SIZE * v_y),
+                            QPointF(c1_x + sign_v * KNOWN_SIZE * v_x, c1_y + sign_v * KNOWN_SIZE * v_y)
+                        ])
+
+            # Draw the mathematically fitted box
+            self.scene.addPolygon(best_poly, QPen(QColor(255, 50, 50), 3, Qt.PenStyle.DashLine), QBrush(QColor(255, 50, 50, 20)))
+            self.log_widget.append(f"🗺️ <span style='color: #FF5555;'><b>BOUNDARY LOCKED:</b></span> 150x150cm arena mathematically fitted.")
+            
+        except Exception as e:
+            self.log_widget.append(f"⚠️ Boundary calculation failed: {e}")
+
+    # --- FEATURE LOGIC ---
+
+    def handle_message(self, robot_name, text):
+        time_str = datetime.now().strftime("%H:%M:%S")
+        self.log_widget.append(f"<span style='color: #666;'>[{time_str}]</span> 📡 [{robot_name}] {text}")
+
+        if robot_name == "Robot41":
+            self.workerB.publish_message("/pynqbridge/80/recv", text)
+            self.log_widget.append(f"<span style='color: #00FFFF;'>[{time_str}] 🚀 Rerouted -> 80/recv</span>")
+        elif robot_name == "Robot80":
+            self.workerA.publish_message("/pynqbridge/41/recv", text)
+            self.log_widget.append(f"<span style='color: #00FF00;'>[{time_str}] 🚀 Rerouted -> 41/recv</span>")
+
+        try:
+            is_41 = robot_name == "Robot41"
+            target = self.robot41_marker if is_41 else self.robot80_marker
+            trail = "cyan" if is_41 else "lime"
+            
+            if is_41:
+                self.timer41.start(60000) 
+            else:
+                self.timer80.start(60000)
+
+            parts = text.split(",")
+            cmd = parts[0]
+
+            if cmd == "MOVE":
+                nx, ny = float(parts[1]) * SCALE, float(parts[2]) * SCALE
+                
+                label = self.status_41_label if is_41 else self.status_80_label
+                pos_label = self.pos_41_label if is_41 else self.pos_80_label
+                label.setText("ONLINE")
+                label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+                pos_label.setText(f"({parts[1]}, {parts[2]}) cm")
+
+                old_c = target.sceneBoundingRect().center()
+                self.scene.addLine(old_c.x(), old_c.y(), nx, ny, QPen(QColor(trail), 1, Qt.PenStyle.DotLine))
+                target.setPos(nx - (ROBOT_SIZE/2), ny - (ROBOT_SIZE/2))
+
+            elif cmd == "ROCK":
+                x, y, sz, col, tmp = float(parts[1]), float(parts[2]), int(parts[3]), parts[4], float(parts[5])
+                self.scene.addItem(RockSample(x, y, sz, col, tmp))
+                discovery = f"💎 {col.capitalize()} Rock ({sz}cm, {tmp}C)"
+                self.findings_list.insertItem(0, f"[{time_str}] {robot_name}: {discovery}")
+
+            elif cmd == "TAPE":
+                tx, ty = float(parts[1]) * SCALE, float(parts[2]) * SCALE
+                dot_size = 2 * SCALE 
+                
+                dot = self.scene.addEllipse(tx - dot_size/2, ty - dot_size/2, dot_size, dot_size, 
+                                            QPen(Qt.GlobalColor.transparent), 
+                                            QBrush(QColor(255, 255, 255, 120)))
+                dot.setToolTip(f"Surface Obstacle Detected\n({parts[1]}, {parts[2]})")
+                
+                # --- NEW: Check if we have enough hits to draw the boundary ---
+                self.tape_hits.append((tx, ty))
+                if len(self.tape_hits) == 3:
+                    self.draw_arena_boundary()
+
+        except Exception as e:
+            self.log_widget.append(f"⚠️ Error: {e}")
+
+    def set_offline(self, robot_name):
+        time_str = datetime.now().strftime("%H:%M:%S")
+        if robot_name == "Robot41":
+            self.status_41_label.setText("OFFLINE")
+            self.status_41_label.setStyleSheet("color: #FF5555; font-weight: bold;")
+        else:
+            self.status_80_label.setText("OFFLINE")
+            self.status_80_label.setStyleSheet("color: #FF5555; font-weight: bold;")
+        self.log_widget.append(f"⚠️ <span style='color: #FF5555;'>[{time_str}] {robot_name} signal lost.</span>")
+
+    def zoom_to_fit(self):
+        rect = self.scene.itemsBoundingRect()
+        if not rect.isNull():
+            padding = 50
+            rect.adjust(-padding, -padding, padding, padding)
+            self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def export_map(self):
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Map", "", "PNG Files (*.png);;All Files (*)")
+        if file_path:
+            rect = self.scene.itemsBoundingRect()
+            img = QPixmap(int(rect.width()), int(rect.height()))
+            img.fill(QColor("#1e1e1e")) 
+            painter = QPainter(img)
+            self.scene.render(painter)
+            painter.end()
+            img.save(file_path)
+            self.log_widget.append(f"📸 Map exported to {file_path}")
+
+    def clear_all(self):
+        confirm = QMessageBox.question(
+            self, "Confirm Mission Reset", 
+            "Are you sure you want to clear all data? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.scene.clear()
+            self.draw_guides()
+            self.initialize_robots()
+            self.log_widget.clear()
+            self.findings_list.clear()
+            self.status_41_label.setText("OFFLINE")
+            self.status_41_label.setStyleSheet("color: #777; font-weight: bold;")
+            self.status_80_label.setText("OFFLINE")
+            self.status_80_label.setStyleSheet("color: #777; font-weight: bold;")
+            self.timer41.stop()
+            self.timer80.stop()
+            self.log_widget.append("Mission Cleared.")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = VenusDashboard()
+    window.show()
+    sys.exit(app.exec())
