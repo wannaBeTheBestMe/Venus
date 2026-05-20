@@ -21,14 +21,14 @@
 
 #define MAX_MSG_LEN 256
 
-#define TURN_90_STEPS   850
+#define TURN_90_STEPS   800
 #define TURN_180_STEPS  1600
 #define MOVE_UNIT       500
 
-#define SPEED_FAST      9000
+#define SPEED_FAST      5700
 #define SPEED_MEDIUM    7000
-#define SPEED_SLOW      4000
-#define SPEED_TURN      3500
+#define SPEED_SLOW      9000
+#define SPEED_TURN      4000
 
 void read_uart_message(uart_index_t uart, char msg[])
 {
@@ -149,7 +149,7 @@ static void wait_motion(int ms)
 }
 
 static void move_forward(int steps, int speed)
-{
+{   
     stepper_set_speed(speed, speed);
     stepper_steps(steps, steps);
 }
@@ -169,7 +169,6 @@ static void turn_left_90(void)
 
 static void turn_right_90(void)
 {
-    move_forward(MOVE_UNIT,SPEED_TURN);
     stepper_set_speed(SPEED_TURN, SPEED_TURN);
     stepper_steps(-TURN_90_STEPS, TURN_90_STEPS);
 }
@@ -397,21 +396,25 @@ int main(void)
 
             else if (strcmp(MSG, "RGOAROUND") == 0)
             {
-                move_forward(MOVE_UNIT, SPEED_TURN);
+                move_forward(MOVE_UNIT, SPEED_SLOW);
 
                 turn_right_90();
                 wait_motion(1000);
-                move_forward(MOVE_UNIT, SPEED_TURN);
+
+                move_forward(MOVE_UNIT * 2, SPEED_SLOW);
+                wait_motion(1000);
 
                 turn_left_90();
                 wait_motion(1000);
 
-                move_forward(MOVE_UNIT, SPEED_TURN);
+                move_forward(MOVE_UNIT * 5, SPEED_SLOW);
+                wait_motion(1000);
 
                 turn_left_90();
                 wait_motion(1000);
 
-                move_forward(MOVE_UNIT, SPEED_TURN);
+                move_forward(MOVE_UNIT * 2, SPEED_SLOW);
+                wait_motion(1000);
 
                 turn_right_90();
                 wait_motion(1000);
@@ -419,11 +422,13 @@ int main(void)
 
             else if(strcmp(MSG, "R") == 0)
             {
+                move_forward(MOVE_UNIT,SPEED_TURN);
                 turn_right_90();
             }
 
             else if(strcmp(MSG,"L") == 0)
             {
+                move_forward(MOVE_UNIT,SPEED_TURN);
                 turn_left_90();
             }
             else
