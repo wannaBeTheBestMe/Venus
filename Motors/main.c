@@ -18,9 +18,19 @@
 #define GREEN_MAX  90
 #define BLUE_MIN   25
 #define BLUE_MAX   70
+
 #define MAX_MSG_LEN 256
 
-void read_uart_message(uart_index_t uart, char *msg)
+#define TURN_90_STEPS   850
+#define TURN_180_STEPS  1600
+#define MOVE_UNIT       500
+
+#define SPEED_FAST      9000
+#define SPEED_MEDIUM    7000
+#define SPEED_SLOW      4000
+#define SPEED_TURN      3500
+
+void read_uart_message(uart_index_t uart, char msg[])
 {
     uint32_t len = 0;
 
@@ -63,11 +73,7 @@ static uint32_t pulseIn_LOW(int pin)
 {
     const uint32_t TIMEOUT_US = 1000000;
 
-    struct timespec t0, t1;
-
-    uint32_t elapsed;
-
-    elapsed = 0;
+    uint32_t elapsed = 0;
 
     while (gpio_get_level(pin) == GPIO_LEVEL_LOW)
     {
@@ -91,6 +97,8 @@ static uint32_t pulseIn_LOW(int pin)
         }
     }
 
+    struct timespec t0, t1;
+
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
     while (gpio_get_level(pin) == GPIO_LEVEL_LOW)
@@ -108,11 +116,11 @@ static uint32_t pulseIn_LOW(int pin)
     return us;
 }
 
-static long map(long x,
-                long in_min,
-                long in_max,
-                long out_min,
-                long out_max)
+static long map_value(long x,
+                      long in_min,
+                      long in_max,
+                      long out_min,
+                      long out_max)
 {
     return (x - in_min) *
            (out_max - out_min) /
@@ -135,17 +143,92 @@ static int clamp255(long v)
     return (int)v;
 }
 
+static void wait_motion(int ms)
+{
+    sleep_msec(ms);
+}
+
+static void move_forward(int steps, int speed)
+{
+    stepper_set_speed(speed, speed);
+    stepper_steps(steps, steps);
+}
+
+//static void move_backward(int steps, int speed)
+//{
+//    stepper_set_speed(speed, speed);
+//    stepper_steps(-steps, -steps);
+//}
+
+static void turn_left_90(void)
+{
+    move_forward(MOVE_UNIT,SPEED_TURN);
+    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    stepper_steps(TURN_90_STEPS, -TURN_90_STEPS);
+}
+
+static void turn_right_90(void)
+{
+    move_forward(MOVE_UNIT,SPEED_TURN);
+    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    stepper_steps(-TURN_90_STEPS, TURN_90_STEPS);
+}
+
+static void turn_180(void)
+{
+    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    stepper_steps(TURN_180_STEPS, -TURN_180_STEPS);
+}
+
+static int detect_black(void)
+{
+    long freq;
+    int r, g, b;
+
+    gpio_set_level(S2, GPIO_LEVEL_LOW);
+    gpio_set_level(S3, GPIO_LEVEL_LOW);
+
+    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+    r = clamp255(map_value(freq, RED_MIN, RED_MAX, 255, 0));
+
+    delay_ms(10);
+
+    gpio_set_level(S2, GPIO_LEVEL_HIGH);
+    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+
+    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+    g = clamp255(map_value(freq, GREEN_MIN, GREEN_MAX, 255, 0));
+
+    delay_ms(10);
+
+    gpio_set_level(S2, GPIO_LEVEL_LOW);
+    gpio_set_level(S3, GPIO_LEVEL_HIGH);
+
+    freq = (long)pulseIn_LOW(SENSOR_OUT);
+
+    b = clamp255(map_value(freq, BLUE_MIN, BLUE_MAX, 255, 0));
+
+    delay_ms(10);
+
+    printf("R=%d G=%d B=%d\n", r, g, b);
+
+    if (r < 150 && g < 150 && b < 150)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
 int main(void)
 {
     pynq_init();
 
-    // -----------------------------
-    // Stepper setup
-    // -----------------------------
     stepper_init();
     stepper_enable();
 
-    // UART setup
     switchbox_set_pin(IO_AR0, SWB_UART0_RX);
     switchbox_set_pin(IO_AR1, SWB_UART0_TX);
 
@@ -172,323 +255,177 @@ int main(void)
     {
         if (uart_has_data(UART0))
         {
-            // Read message
-
             read_uart_message(UART0, MSG);
 
             fprintf(stderr, "MSG = %s\n", MSG);
 
             if (strncmp(MSG, "MOVE", 4) == 0)
             {
-                int x;
-                int y;
+                int x, y;
 
                 if (sscanf(MSG, "MOVE,%d,%d", &x, &y) == 2)
                 {
                     fprintf(stderr, "X = %d\n", x);
                     fprintf(stderr, "Y = %d\n", y);
 
-                    // ---------------------------------
-                    // MOVE IN X DIRECTION
-                    // ---------------------------------
-
-                    stepper_set_speed(9000, 9000);
-
-                    stepper_steps(x * 250, x * 250);
-
-                    sleep_msec(2000);
-
-                    // ---------------------------------
-                    // 90 DEGREE TURN
-                    // ---------------------------------
-                    if(y != 0)
+                    if (x > 0)
                     {
-                        stepper_steps(675, -675);
-                        sleep_msec(2000);
+                        move_forward(x * MOVE_UNIT, SPEED_FAST);
+                        wait_motion(2000);
                     }
 
-                    // ---------------------------------
-                    // MOVE IN Y DIRECTION
-                    // ---------------------------------
+                    if (x < 0)
+                    {
+                        turn_180();
+                        wait_motion(2000);
 
-                    stepper_steps(y * 250, y * 250);
+                        move_forward((-x) * MOVE_UNIT, SPEED_FAST);
+                        wait_motion(2000);
+                    }
 
-                    sleep_msec(2000);
+                    if (y > 0)
+                    {
+                        turn_right_90();
+                        wait_motion(2000);
+                    }
+                    else if (y < 0)
+                    {
+                        turn_left_90();
+                        wait_motion(2000);
+
+                        y = -y;
+                    }
+
+                    if (y != 0)
+                    {
+                        move_forward(y * MOVE_UNIT, SPEED_FAST);
+                        wait_motion(2000);
+                    }
 
                     fprintf(stderr, "MOVE COMPLETE\n");
-                }
-                else
-                {
-                    fprintf(stderr, "INVALID MOVE FORMAT\n");
                 }
             }
 
             else if (strcmp(MSG, "UTURN") == 0)
             {
-                //MOVE FORWARD//
-
-                stepper_set_speed(9000, 9000);
-                stepper_steps(10 * 250, 10 * 250);
-                sleep_msec(2000);
-
-                // 180 DEGREE TURN//
-
-                stepper_set_speed(4000,4000);
-                stepper_steps(1500, -1500);
-                sleep_msec(1000);  
-
-                //MOVE FORWARD AGAIN//
-
-                stepper_set_speed(9000, 9000);
-                stepper_steps(10 * 250, 10 * 250);
-                sleep_msec(2000);
+                turn_180();
             }
 
             else if (strcmp(MSG, "STOPBLACK") == 0)
             {
                 int running = 1;
 
-                do
+                while (running)
                 {
-                    stepper_set_speed(9000, 9000);
+                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
 
-                    stepper_steps(10000, 10000);
-
-
-                    long freq;
-                    int r, g, b;
-
-                    gpio_set_level(S2, GPIO_LEVEL_LOW);
-                    gpio_set_level(S3, GPIO_LEVEL_LOW);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    r = clamp255(map(freq, RED_MIN, RED_MAX, 255, 0));
-
-
-                    gpio_set_level(S2, GPIO_LEVEL_HIGH);
-                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    g = clamp255(map(freq, GREEN_MIN, GREEN_MAX, 255, 0));
-                    gpio_set_level(S2, GPIO_LEVEL_LOW);
-                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    b = clamp255(map(freq, BLUE_MIN, BLUE_MAX, 255, 0));
-
-
-                    printf("R=%d G=%d B=%d\n", r, g, b);
-
-                    if ((r < 150 && g < 150 && b < 150) || strcmp(MSG,"STOP") == 0)
+                    if (detect_black())
                     {
                         running = 0;
 
                         fprintf(stderr, "BLACK DETECTED\n");
                     }
 
-                } while (running);
+                    wait_motion(1000);
+                }
             }
 
-            else if(strcmp(MSG, "LBLACK") == 0)
+            else if (strcmp(MSG, "LBLACK") == 0)
             {
                 int running = 1;
 
-                do
+                while (running)
                 {
-                    stepper_set_speed(9000, 9000);
+                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
 
-                    stepper_steps(10000, 10000);
-
-                    sleep_msec(10);
-
-                    long freq;
-                    int r, g, b;
-
-                    gpio_set_level(S2, GPIO_LEVEL_LOW);
-                    gpio_set_level(S3, GPIO_LEVEL_LOW);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    r = clamp255(map(freq, RED_MIN, RED_MAX, 255, 0));
-
-                    delay_ms(10);
-
-                    gpio_set_level(S2, GPIO_LEVEL_HIGH);
-                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    g = clamp255(map(freq, GREEN_MIN, GREEN_MAX, 255, 0));
-
-                    delay_ms(10);
-
-                    gpio_set_level(S2, GPIO_LEVEL_LOW);
-                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    b = clamp255(map(freq, BLUE_MIN, BLUE_MAX, 255, 0));
-
-                    delay_ms(10);
-
-                    printf("R=%d G=%d B=%d\n", r, g, b);
-
-                    if ((r < 150 && g < 150 && b < 150))
+                    if (detect_black())
                     {
                         running = 0;
 
-                        stepper_steps(675, -675);
-
-                        sleep_msec(2000);
+                        turn_left_90();
 
                         fprintf(stderr, "BLACK DETECTED\n");
                     }
 
-                } while (running);
+                    wait_motion(1000);
+                }
             }
 
-           else if(strcmp(MSG, "RBLACK") == 0)
+            else if (strcmp(MSG, "RBLACK") == 0)
             {
                 int running = 1;
 
-                do
+                while (running)
                 {
-                    stepper_set_speed(9000, 9000);
+                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
 
-                    stepper_steps(10000, 10000);
-
-                    sleep_msec(10);
-
-                    long freq;
-                    int r, g, b;
-
-                    gpio_set_level(S2, GPIO_LEVEL_LOW);
-                    gpio_set_level(S3, GPIO_LEVEL_LOW);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    r = clamp255(map(freq, RED_MIN, RED_MAX, 255, 0));
-
-                    delay_ms(10);
-
-                    gpio_set_level(S2, GPIO_LEVEL_HIGH);
-                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    g = clamp255(map(freq, GREEN_MIN, GREEN_MAX, 255, 0));
-
-                    delay_ms(10);
-
-                    gpio_set_level(S2, GPIO_LEVEL_LOW);
-                    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-
-                    freq = (long)pulseIn_LOW(SENSOR_OUT);
-
-                    b = clamp255(map(freq, BLUE_MIN, BLUE_MAX, 255, 0));
-
-                    delay_ms(10);
-
-                    printf("R=%d G=%d B=%d\n", r, g, b);
-
-                    if ((r < 150 && g < 150 && b < 150))
+                    if (detect_black())
                     {
                         running = 0;
 
-                        stepper_steps(-675, 675);
-
-                        sleep_msec(2000);
+                        turn_right_90();
 
                         fprintf(stderr, "BLACK DETECTED\n");
                     }
 
-                } while (running);
+                    wait_motion(1000);
+                }
             }
 
-            else if(strcmp(MSG, "LGOAROUND") == 0)
+            else if (strcmp(MSG, "LGOAROUND") == 0)
             {
-                // going around object//
-                    stepper_set_speed(9000, 9000);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                    stepper_steps(100, 100);
+                turn_left_90();
+                wait_motion(1000);
 
-                    sleep_msec(50);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                            // turn left
-                            stepper_steps(675, -675);
-                            sleep_msec(2000);
+                turn_right_90();
+                wait_motion(1000);
 
-                            // move forward//
-                            stepper_steps(1000, 1000);
-                            sleep_msec(2000);
-                            
-                            //turn right
-                            stepper_steps(-675, 675);
-                            sleep_msec(2000);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                            // move forward//
-                            stepper_steps(1000, 1000);
-                            sleep_msec(2000);
+                turn_right_90();
+                wait_motion(1000);
 
-                             //turn right
-                            stepper_steps(-675, 675);
-                            sleep_msec(2000);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                            // move forward//
-                            stepper_steps(1000, 1000);
-                            sleep_msec(2000);
-
-                            // turn left
-                            stepper_steps(675, -675);
-                            sleep_msec(2000);
-
+                turn_left_90();
+                wait_motion(1000);
             }
 
-            else if(strcmp(MSG, "RGOAROUND") == 0)
+            else if (strcmp(MSG, "RGOAROUND") == 0)
             {
-                // going around object//
-                    stepper_set_speed(9000, 9000);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                    stepper_steps(100, 100);
+                turn_right_90();
+                wait_motion(1000);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                    sleep_msec(50);
+                turn_left_90();
+                wait_motion(1000);
 
-                            // turn right
-                            stepper_steps(-675, 675);
-                            sleep_msec(2000);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                            // move forward//
-                            stepper_steps(1000, 1000);
-                            sleep_msec(2000);
-                            
-                            //turn left
-                            stepper_steps(675, -675);
-                            sleep_msec(2000);
+                turn_left_90();
+                wait_motion(1000);
 
-                            // move forward//
-                            stepper_steps(1000, 1000);
-                            sleep_msec(2000);
+                move_forward(MOVE_UNIT, SPEED_TURN);
 
-                             //turn left
-                            stepper_steps(675, -675);
-                            sleep_msec(2000);
-
-                            // move forward//
-                            stepper_steps(1000, 1000);
-                            sleep_msec(2000);
-
-                            // turn right
-                            stepper_steps(-675, 675);
-                            sleep_msec(2000);
-
+                turn_right_90();
+                wait_motion(1000);
             }
 
+            else if(strcmp(MSG, "R") == 0)
+            {
+                turn_right_90();
+            }
 
-            
-
+            else if(strcmp(MSG,"L") == 0)
+            {
+                turn_left_90();
+            }
             else
             {
                 fprintf(stderr, "UNKNOWN COMMAND\n");
@@ -501,6 +438,7 @@ int main(void)
     }
 
     stepper_destroy();
+
     pynq_destroy();
 
     return 0;
