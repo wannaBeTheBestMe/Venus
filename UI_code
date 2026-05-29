@@ -268,7 +268,7 @@ class VenusDashboard(QMainWindow):
             self.log_widget.append(f"🗺️ <span style='color: #FF5555;'><b>BOUNDARY LOCKED:</b></span> 150x150cm arena mathematically fitted.")
             
         except Exception as e:
-            self.log_widget.append(f"⚠️ Boundary calculation failed: {e}")
+            self.log_widget.append(f"Boundary calculation failed: {e}")
 
     # --- FEATURE LOGIC ---
 
@@ -309,10 +309,67 @@ class VenusDashboard(QMainWindow):
                 self.scene.addLine(old_c.x(), old_c.y(), nx, ny, QPen(QColor(trail), 1, Qt.PenStyle.DotLine))
                 target.setPos(nx - (ROBOT_SIZE/2), ny - (ROBOT_SIZE/2))
 
+            elif cmd == "STEPS":
+
+                steps = float(parts[1])
+                direction = int(parts[2])
+
+                # Current robot center position
+                old_c = target.sceneBoundingRect().center()
+
+                # Relative movement
+                if direction == 1:      # +X
+                    nx = old_c.x() + (steps * SCALE)
+                    ny = old_c.y()
+
+                elif direction == 2:    # +Y
+                    nx = old_c.x()
+                    ny = old_c.y() + (steps * SCALE)
+
+                elif direction == 3:    # -X
+                    nx = old_c.x() - (steps * SCALE)
+                    ny = old_c.y()
+
+                elif direction == 4:    # -Y
+                    nx = old_c.x()
+                    ny = old_c.y() - (steps * SCALE)
+
+                else:
+                    raise ValueError(f"Invalid direction: {direction}")
+
+                # Telemetry labels
+                label = self.status_41_label if is_41 else self.status_80_label
+                pos_label = self.pos_41_label if is_41 else self.pos_80_label
+
+                label.setText("ONLINE")
+                label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+
+                pos_label.setText(
+                    f"({round(nx / SCALE, 1)}, {round(ny / SCALE, 1)}) cm"
+                )
+
+                """
+                # Draw trail
+                self.scene.addLine(
+                    old_c.x(),
+                    old_c.y(),
+                    nx,
+                    ny,
+                    QPen(QColor(trail), 1, Qt.PenStyle.DotLine)
+                )
+                """
+            
+
+                # Move robot marker
+                target.setPos(
+                    nx - (ROBOT_SIZE / 2),
+                    ny - (ROBOT_SIZE / 2)
+                )
+
             elif cmd == "ROCK":
                 x, y, sz, col, tmp = float(parts[1]), float(parts[2]), int(parts[3]), parts[4], float(parts[5])
                 self.scene.addItem(RockSample(x, y, sz, col, tmp))
-                discovery = f"💎 {col.capitalize()} Rock ({sz}cm, {tmp}C)"
+                discovery = f"{col.capitalize()} Rock ({sz}cm, {tmp}C)"
                 self.findings_list.insertItem(0, f"[{time_str}] {robot_name}: {discovery}")
 
             elif cmd == "TAPE":
@@ -330,7 +387,7 @@ class VenusDashboard(QMainWindow):
                     self.draw_arena_boundary()
 
         except Exception as e:
-            self.log_widget.append(f"⚠️ Error: {e}")
+            self.log_widget.append(f"Error: {e}")
 
     def set_offline(self, robot_name):
         time_str = datetime.now().strftime("%H:%M:%S")
@@ -340,7 +397,7 @@ class VenusDashboard(QMainWindow):
         else:
             self.status_80_label.setText("OFFLINE")
             self.status_80_label.setStyleSheet("color: #FF5555; font-weight: bold;")
-        self.log_widget.append(f"⚠️ <span style='color: #FF5555;'>[{time_str}] {robot_name} signal lost.</span>")
+        self.log_widget.append(f"<span style='color: #FF5555;'>[{time_str}] {robot_name} signal lost.</span>")
 
     def zoom_to_fit(self):
         rect = self.scene.itemsBoundingRect()
