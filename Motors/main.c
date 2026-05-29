@@ -22,7 +22,7 @@
 #define MAX_MSG_LEN 256
 
 #define TURN_90_STEPS   800
-#define TURN_180_STEPS  1600
+#define TURN_180_STEPS  1500
 #define MOVE_UNIT       500
 
 #define SPEED_FAST      5700
@@ -56,6 +56,27 @@ void read_uart_message(uart_index_t uart, char msg[])
     }
 
     msg[len] = '\0';
+}
+
+void send_message(char *msg)
+{
+    // Add +1 to include the string null-terminator (\0) in the payload
+    uint32_t msg_size = 0;
+    msg_size = strlen(msg)+1; 
+
+    // Send length (4 bytes, LITTLE-endian)
+    uart_send(UART0, (msg_size) & 0xFF);
+    uart_send(UART0, (msg_size >> 8) & 0xFF);
+    uart_send(UART0, (msg_size >> 16) & 0xFF);
+    uart_send(UART0, (msg_size >> 24) & 0xFF);
+
+    // Send payload (including the null terminator)
+    for (uint32_t i = 0; i < msg_size; i++) {
+        uart_send(UART0, msg[i]);
+    }
+
+    // Debug output
+    fprintf(stderr, "Sent: %s\n", msg);
 }
 
 static void delay_ms(int ms)
@@ -239,6 +260,7 @@ int main(void)
     fprintf(stderr, "READY\n");
 
     char MSG[MAX_MSG_LEN];
+    int ort = 1;
 
     gpio_set_direction(S0, GPIO_DIR_OUTPUT);
     gpio_set_direction(S1, GPIO_DIR_OUTPUT);
@@ -254,11 +276,42 @@ int main(void)
     {
         if (uart_has_data(UART0))
         {
+        
             read_uart_message(UART0, MSG);
 
             fprintf(stderr, "MSG = %s\n", MSG);
 
-            if (strncmp(MSG, "MOVE", 4) == 0)
+            if(strcmp(MSG, "F") == 0)
+            {
+                long count = 0;
+                while(1)
+                {
+                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
+                    count++;
+                    wait_motion(100);
+
+                    if(uart_has_data(UART0))
+                    {
+                        read_uart_message(UART0, MSG);
+
+                        fprintf(stderr, "NEW MSG = %s\n", MSG);
+                        if(strcmp(MSG,"S") == 0)
+                        {
+                            char stp[64];
+                            
+
+                            sprintf(stp, "STEPS,%ld,%d", count,ort);
+
+                            send_message(stp);
+
+                            fprintf(stderr, "%s\n", stp);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            else if (strncmp(MSG, "MOVE", 4) == 0)
             {
                 int x, y;
 
@@ -305,9 +358,44 @@ int main(void)
                 }
             }
 
-            else if (strcmp(MSG, "UTURN") == 0)
+            else if(strcmp(MSG,"U") == 0)
             {
                 turn_180();
+                if(ort > 2)
+                {
+                    ort = ort - 2;
+                }
+                else 
+                {
+                    ort = ort + 2;
+                }
+            }
+
+            
+            else if(strcmp(MSG, "R") == 0)
+            {
+                move_forward(MOVE_UNIT,SPEED_TURN);
+                turn_right_90();
+                wait_motion(100);
+                ort++;
+
+                if(ort > 4)
+                {
+                    ort = 1;
+                }
+            }
+
+            else if(strcmp(MSG,"L") == 0)
+            {
+                move_forward(MOVE_UNIT,SPEED_TURN);
+                turn_left_90();
+                wait_motion(100);
+                ort--;
+
+                if(ort < 1)
+                {
+                    ort = 4;
+                }
             }
 
             else if (strcmp(MSG, "STOPBLACK") == 0)
@@ -329,108 +417,6 @@ int main(void)
                 }
             }
 
-            else if (strcmp(MSG, "LBLACK") == 0)
-            {
-                int running = 1;
-
-                while (running)
-                {
-                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
-
-                    if (detect_black())
-                    {
-                        running = 0;
-
-                        turn_left_90();
-
-                        fprintf(stderr, "BLACK DETECTED\n");
-                    }
-
-                    wait_motion(1000);
-                }
-            }
-
-            else if (strcmp(MSG, "RBLACK") == 0)
-            {
-                int running = 1;
-
-                while (running)
-                {
-                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
-
-                    if (detect_black())
-                    {
-                        running = 0;
-
-                        turn_right_90();
-
-                        fprintf(stderr, "BLACK DETECTED\n");
-                    }
-
-                    wait_motion(1000);
-                }
-            }
-
-            else if (strcmp(MSG, "LGOAROUND") == 0)
-            {
-                move_forward(MOVE_UNIT, SPEED_TURN);
-
-                turn_left_90();
-                wait_motion(1000);
-
-                move_forward(MOVE_UNIT, SPEED_TURN);
-
-                turn_right_90();
-                wait_motion(1000);
-
-                move_forward(MOVE_UNIT, SPEED_TURN);
-
-                turn_right_90();
-                wait_motion(1000);
-
-                move_forward(MOVE_UNIT, SPEED_TURN);
-
-                turn_left_90();
-                wait_motion(1000);
-            }
-
-            else if (strcmp(MSG, "RGOAROUND") == 0)
-            {
-                move_forward(MOVE_UNIT, SPEED_SLOW);
-
-                turn_right_90();
-                wait_motion(1000);
-
-                move_forward(MOVE_UNIT * 2, SPEED_SLOW);
-                wait_motion(1000);
-
-                turn_left_90();
-                wait_motion(1000);
-
-                move_forward(MOVE_UNIT * 5, SPEED_SLOW);
-                wait_motion(1000);
-
-                turn_left_90();
-                wait_motion(1000);
-
-                move_forward(MOVE_UNIT * 2, SPEED_SLOW);
-                wait_motion(1000);
-
-                turn_right_90();
-                wait_motion(1000);
-            }
-
-            else if(strcmp(MSG, "R") == 0)
-            {
-                move_forward(MOVE_UNIT,SPEED_TURN);
-                turn_right_90();
-            }
-
-            else if(strcmp(MSG,"L") == 0)
-            {
-                move_forward(MOVE_UNIT,SPEED_TURN);
-                turn_left_90();
-            }
             else
             {
                 fprintf(stderr, "UNKNOWN COMMAND\n");
