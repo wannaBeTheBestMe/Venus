@@ -86,7 +86,7 @@ void send_message(char *msg)
 {
     // Add +1 to include the string null-terminator (\0) in the payload
     uint32_t msg_size = 0;
-    msg_size = strlen(msg)+1; 
+    msg_size = strlen(msg)+1;
 
     // Send length (4 bytes, LITTLE-endian)
     uart_send(UART0, (msg_size) & 0xFF);
@@ -205,7 +205,7 @@ static void wait_motion(int ms)
 }
 
 static void move_forward(int steps, int speed)
-{   
+{
     stepper_set_speed(speed, speed);
     stepper_steps(steps, steps);
 }
@@ -414,26 +414,6 @@ static void sweep_right_until_wall(void)
         // curved movement
         stepper_set_speed(30000, 15000);
         stepper_steps(100, 10);
-
-        sleep_msec(40);
-
-        int dist = vl53_read_distance();
-
-        // stop condition
-        if(dist > 0 && dist < 300)
-        {
-            printf("OBJECT DETECTED\n");
-            break;
-        }
-    }
-}
-static void sweep_left_until_wall(void)
-{
-    while(1)
-    {
-        // curved movement
-        stepper_set_speed(15000, 30000);
-        stepper_steps(10, 100);
 
         sleep_msec(40);
 
