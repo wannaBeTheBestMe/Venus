@@ -18,7 +18,7 @@ int main(void)
 
     iic_init(IIC0);
 
-    if (detect_sensors()) 
+    if (detect_sensors())
     {
         pynq_destroy();
         return EXIT_FAILURE;
@@ -26,7 +26,7 @@ int main(void)
 
     tcs_init();
     vl53_init();
-    
+
     uart_init(UART0);
     uart_reset_fifos(UART0);
 
@@ -266,11 +266,6 @@ int main(void)
                 sweep_right_until_wall();
             }
 
-            else if(strcmp(MSG,"LSWEEP") == 0)
-            {
-                sweep_leftt_until_wall();
-            }
-
             else
             {
                 fprintf(stderr, "UNKNOWN COMMAND\n");
@@ -285,9 +280,6 @@ int main(void)
     stepper_destroy();
 
     pynq_destroy();
-
-    return 0;
-}
 
     return 0;
 }
