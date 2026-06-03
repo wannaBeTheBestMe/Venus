@@ -1,15 +1,5 @@
 #include "main_header.h"
 
-static void send_orientation(int ort)
-{
-    char msg[32];
-
-    sprintf(msg, "ORT,%d", ort);
-
-    send_message(msg);
-
-    fprintf(stderr, "SENT %s\n", msg);
-}
 
 int main(void)
 {
@@ -18,14 +8,25 @@ int main(void)
     stepper_init();
     stepper_enable();
 
+    //MQTT
     switchbox_set_pin(IO_AR0, SWB_UART0_RX);
     switchbox_set_pin(IO_AR1, SWB_UART0_TX);
 
+    //MUX
     switchbox_set_pin(IO_AR_SCL, SWB_IIC0_SCL);
     switchbox_set_pin(IO_AR_SDA, SWB_IIC0_SDA);
 
     iic_init(IIC0);
 
+    if (detect_sensors()) 
+    {
+        pynq_destroy();
+        return EXIT_FAILURE;
+    }
+
+    tcs_init();
+    vl53_init();
+    
     uart_init(UART0);
     uart_reset_fifos(UART0);
 
@@ -70,7 +71,7 @@ int main(void)
 
                     wait_motion(100);
 
-                    read_distance();
+                    vl53_read_distance();
 
                     if(uart_has_data(UART0))
                     {
@@ -263,8 +264,11 @@ int main(void)
             else if(strcmp(MSG,"RSWEEP") == 0)
             {
                 sweep_right_until_wall();
+            }
 
-                send_orientation(ort);
+            else if(strcmp(MSG,"LSWEEP") == 0)
+            {
+                sweep_leftt_until_wall();
             }
 
             else
@@ -285,16 +289,6 @@ int main(void)
     return 0;
 }#include "main_header.h"
 
-static void send_orientation(int ort)
-{
-    char msg[32];
-
-    sprintf(msg, "ORT,%d", ort);
-
-    send_message(msg);
-
-    fprintf(stderr, "SENT %s\n", msg);
-}
 
 int main(void)
 {
@@ -303,14 +297,25 @@ int main(void)
     stepper_init();
     stepper_enable();
 
+    //MQTT
     switchbox_set_pin(IO_AR0, SWB_UART0_RX);
     switchbox_set_pin(IO_AR1, SWB_UART0_TX);
 
+    //MUX
     switchbox_set_pin(IO_AR_SCL, SWB_IIC0_SCL);
     switchbox_set_pin(IO_AR_SDA, SWB_IIC0_SDA);
 
     iic_init(IIC0);
 
+    if (detect_sensors()) 
+    {
+        pynq_destroy();
+        return EXIT_FAILURE;
+    }
+
+    tcs_init();
+    vl53_init();
+    
     uart_init(UART0);
     uart_reset_fifos(UART0);
 
@@ -355,7 +360,7 @@ int main(void)
 
                     wait_motion(100);
 
-                    read_distance();
+                    vl53_read_distance();
 
                     if(uart_has_data(UART0))
                     {
@@ -548,8 +553,11 @@ int main(void)
             else if(strcmp(MSG,"RSWEEP") == 0)
             {
                 sweep_right_until_wall();
+            }
 
-                send_orientation(ort);
+            else if(strcmp(MSG,"LSWEEP") == 0)
+            {
+                sweep_leftt_until_wall();
             }
 
             else
