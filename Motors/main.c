@@ -1,6 +1,4 @@
 #include "main_header.h"
-
-
 int main(void)
 {
     pynq_init();
@@ -8,11 +6,11 @@ int main(void)
     stepper_init();
     stepper_enable();
 
-    //MQTT
+    // MQTT
     switchbox_set_pin(IO_AR0, SWB_UART0_RX);
     switchbox_set_pin(IO_AR1, SWB_UART0_TX);
 
-    //MUX
+    // MUX
     switchbox_set_pin(IO_AR_SCL, SWB_IIC0_SCL);
     switchbox_set_pin(IO_AR_SDA, SWB_IIC0_SDA);
 
@@ -36,7 +34,11 @@ int main(void)
 
     char MSG[MAX_MSG_LEN];
 
-    int ort = 1;
+    orientation_t ori =
+    {
+        .ort = 1,
+        .theta = 0.0f
+    };
 
     gpio_set_direction(S0, GPIO_DIR_OUTPUT);
     gpio_set_direction(S1, GPIO_DIR_OUTPUT);
@@ -56,9 +58,10 @@ int main(void)
 
             fprintf(stderr, "MSG = %s\n", MSG);
 
-            // =========================
-            // FORWARD UNTIL STOP
-            // =========================
+            // =====================================================
+            // FORWARD
+            // =====================================================
+
             if(strcmp(MSG, "F") == 0)
             {
                 long count = 0;
@@ -71,15 +74,15 @@ int main(void)
 
                     wait_motion(100);
 
-                    vl53_read_distance();
+                    int dist = vl53_read_distance();
+
+                    printf("DIST = %d\n", dist);
 
                     if(uart_has_data(UART0))
                     {
                         read_uart_message(UART0, MSG);
 
-                        fprintf(stderr, "NEW MSG = %s\n", MSG);
-
-                        if(strcmp(MSG,"S") == 0)
+                        if(strcmp(MSG, "S") == 0)
                         {
                             char stp[64];
 
@@ -87,9 +90,9 @@ int main(void)
 
                             send_message(stp);
 
-                            fprintf(stderr, "%s\n", stp);
+                            send_orientation(&ori);
 
-                            send_orientation(ort);
+                            print_orientation(&ori);
 
                             break;
                         }
@@ -97,108 +100,10 @@ int main(void)
                 }
             }
 
-            // =========================
-            // MOVE X,Y
-            // =========================
-            else if (strncmp(MSG, "MOVE", 4) == 0)
-            {
-                int x, y;
-
-                if (sscanf(MSG, "MOVE,%d,%d", &x, &y) == 2)
-                {
-                    fprintf(stderr, "X = %d\n", x);
-                    fprintf(stderr, "Y = %d\n", y);
-
-                    // X movement
-                    if (x > 0)
-                    {
-                        move_forward(x * MOVE_UNIT, SPEED_FAST);
-
-                        wait_motion(2000);
-                    }
-
-                    if (x < 0)
-                    {
-                        turn_180();
-
-                        wait_motion(2000);
-
-                        ort += 2;
-
-                        if(ort > 4)
-                            ort -= 4;
-
-                        send_orientation(ort);
-
-                        move_forward((-x) * MOVE_UNIT, SPEED_FAST);
-
-                        wait_motion(2000);
-                    }
-
-                    // Y direction
-                    if (y > 0)
-                    {
-                        turn_right_90();
-
-                        wait_motion(2000);
-
-                        ort++;
-
-                        if(ort > 4)
-                            ort = 1;
-
-                        send_orientation(ort);
-                    }
-                    else if (y < 0)
-                    {
-                        turn_left_90();
-
-                        wait_motion(2000);
-
-                        ort--;
-
-                        if(ort < 1)
-                            ort = 4;
-
-                        send_orientation(ort);
-
-                        y = -y;
-                    }
-
-                    // Y movement
-                    if (y != 0)
-                    {
-                        move_forward(y * MOVE_UNIT, SPEED_FAST);
-
-                        wait_motion(2000);
-                    }
-
-                    fprintf(stderr, "MOVE COMPLETE\n");
-
-                    send_orientation(ort);
-                }
-            }
-
-            // =========================
-            // TURN 180
-            // =========================
-            else if(strcmp(MSG,"U") == 0)
-            {
-                turn_180();
-
-                wait_motion(100);
-
-                if(ort > 2)
-                    ort -= 2;
-                else
-                    ort += 2;
-
-                send_orientation(ort);
-            }
-
-            // =========================
+            // =====================================================
             // RIGHT
-            // =========================
+            // =====================================================
+
             else if(strcmp(MSG, "R") == 0)
             {
                 move_forward(MOVE_UNIT, SPEED_TURN);
@@ -207,18 +112,20 @@ int main(void)
 
                 wait_motion(100);
 
-                ort++;
+                rotate_orientation(&ori, 90.0f);
 
-                if(ort > 4)
-                    ort = 1;
+                ori.theta = 0.0f;
 
-                send_orientation(ort);
+                print_orientation(&ori);
+
+                send_orientation(&ori);
             }
 
-            // =========================
+            // =====================================================
             // LEFT
-            // =========================
-            else if(strcmp(MSG,"L") == 0)
+            // =====================================================
+
+            else if(strcmp(MSG, "L") == 0)
             {
                 move_forward(MOVE_UNIT, SPEED_TURN);
 
@@ -226,45 +133,83 @@ int main(void)
 
                 wait_motion(100);
 
-                ort--;
+                rotate_orientation(&ori, -90.0f);
 
-                if(ort < 1)
-                    ort = 4;
+                ori.theta = 0.0f;
 
-                send_orientation(ort);
+                print_orientation(&ori);
+
+                send_orientation(&ori);
             }
 
-            // =========================
-            // STOP ON BLACK
-            // =========================
-            else if (strcmp(MSG, "STOPBLACK") == 0)
-            {
-                int running = 1;
+            // =====================================================
+            // U TURN
+            // =====================================================
 
-                while (running)
+            else if(strcmp(MSG, "U") == 0)
+            {
+                turn_180();
+
+                wait_motion(100);
+
+                rotate_orientation(&ori, 180.0f);
+
+                ori.theta = 0.0f;
+
+                print_orientation(&ori);
+
+                send_orientation(&ori);
+            }
+
+            // =====================================================
+            // STOP BLACK
+            // =====================================================
+
+            else if(strcmp(MSG, "STOPBLACK") == 0)
+            {
+                while(1)
                 {
                     move_forward(MOVE_UNIT, SPEED_MEDIUM);
 
-                    if (detect_black())
-                    {
-                        running = 0;
+                    wait_motion(100);
 
+                    if(detect_black())
+                    {
                         fprintf(stderr, "BLACK DETECTED\n");
 
-                        send_orientation(ort);
-                    }
+                        send_orientation(&ori);
 
-                    wait_motion(1000);
+                        break;
+                    }
                 }
             }
 
-            // =========================
+            // =====================================================
             // SWEEP
-            // =========================
-            else if(strcmp(MSG,"RSWEEP") == 0)
+            // =====================================================
+
+            else if(strcmp(MSG, "RSWEEP") == 0)
             {
-                sweep_right_until_wall();
+                sweep_right_for_object(&ori);
+                send_orientation(&ori);
             }
+
+            else if(strcmp(MSG,"D") == 0)
+            {
+                for(int i = 0; i < 90; i++)
+                {
+                    turn_degree();
+
+                    rotate_orientation(&ori, 1.0f);
+
+                    print_orientation(&ori);
+
+                    send_orientation(&ori);
+
+                    wait_motion(20);
+                }
+            }
+
 
             else
             {
@@ -283,3 +228,4 @@ int main(void)
 
     return 0;
 }
+
