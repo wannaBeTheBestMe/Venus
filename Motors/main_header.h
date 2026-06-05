@@ -54,6 +54,7 @@
 
 #define CALIBRATION_OFFSET_MM -27
 
+
 void read_uart_message(uart_index_t uart, char msg[])
 {
     uint32_t len = 0;
@@ -103,16 +104,151 @@ void send_message(char *msg)
     fprintf(stderr, "Sent: %s\n", msg);
 }
 
-static void send_orientation(int ort)
-{
-    char msg[32];
 
-    sprintf(msg, "ORT,%d", ort);
+// ======================================================
+// ORIENTATION STRUCT
+// ======================================================
+
+typedef struct
+{
+    int ort;
+// 1 = NORTH
+    // 2 = EAST
+    // 3 = SOUTH
+    // 4 = WEST
+
+    float theta;
+
+    // local angle inside quadrant
+    // 0 -> 89.999
+
+} orientation_t;
+
+
+static void send_orientation(orientation_t *ori)
+{
+    char msg[64];
+
+    sprintf(msg,
+            "ORT,%d,%.2f",
+            ori->ort,
+            ori->theta);
 
     send_message(msg);
 
-    fprintf(stderr, "SENT %s\n", msg);
+    fprintf(stderr,
+            "SENT ORT=%d THETA=%.2f\n",
+            ori->ort,
+            ori->theta);
 }
+
+// ======================================================
+// ORT STRING
+// ======================================================
+
+static const char* ort_to_string(int ort)
+{
+    switch(ort)
+    {
+        case 1:
+            return "NORTH";
+
+        case 2:
+            return "EAST";
+
+        case 3:
+            return "SOUTH";
+
+        case 4:
+            return "WEST";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+// ======================================================
+// ROTATION UPDATE
+// ======================================================
+
+static void rotate_orientation(orientation_t *o,
+                               float delta_deg)
+{
+    o->theta += delta_deg;
+
+    // CLOCKWISE
+    while(o->theta >= 90.0f)
+    {
+        o->theta -= 90.0f;
+
+        o->ort++;
+
+        if(o->ort > 4)
+        {
+            o->ort = 1;
+        }
+    }
+
+    // COUNTER CLOCKWISE
+    while(o->theta < 0.0f)
+    {
+        o->theta += 90.0f;
+
+        o->ort--;
+
+        if(o->ort < 1)
+        {
+            o->ort = 4;
+        }
+    }
+}
+
+// ======================================================
+// ABSOLUTE HEADING
+// ======================================================
+
+static float get_heading(orientation_t *o)
+{
+    return ((o->ort - 1) * 90.0f) + o->theta;
+}
+
+// ======================================================
+// SNAP TO CARDINAL
+// ======================================================
+
+// static void snap_orientation(orientation_t *o)
+// {
+//     if(o->theta >= 45.0f)
+//     {
+//         o->theta = 0.0f;
+
+//         o->ort++;
+
+//         if(o->ort > 4)
+//         {
+//             o->ort = 1;
+//         }
+//     }
+//     else
+//     {
+//         o->theta = 0.0f;
+//     }
+// }
+
+// ======================================================
+// PRINT
+// ======================================================
+
+static void print_orientation(orientation_t *o)
+{
+    printf(
+        "ORT=%s | theta=%.2f | heading=%.2f\n",
+        ort_to_string(o->ort),
+        o->theta,
+        get_heading(o)
+    );
+}
+
 
 static void delay_ms(int ms)
 {
@@ -277,6 +413,15 @@ static int detect_black(void)
     return 0;
 }
 
+static void turn_degree(void)
+{
+    stepper_set_speed(30000, 15000);
+
+    stepper_steps(100, 10);
+
+    sleep_msec(40);
+}
+
 
 int tcs_channel = -1;
 int vl53_channel = -1;
@@ -382,48 +527,91 @@ int vl53_read_distance(void)
 {
     mux_select_channel(vl53_channel);
 
-    uint8_t trig = 0x01;
-    iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &trig, 1);
+    uint8_t start = 0x01;
 
-    sleep_msec(50);
+    iic_write_register(
+        IIC0,
+        SENSOR_ADDR,
+        VL53_SYSRANGE,
+        &start,
+        1
+    );
+
+    sleep_msec(60);
 
     uint8_t data[2];
 
-    if (iic_read_register(IIC0, SENSOR_ADDR, VL53_DISTANCE_REG, data, 2)) {
-        printf("VL53L0X read error\n");
-        return 1;
+    if(iic_read_register(
+        IIC0,
+        SENSOR_ADDR,
+        0x1E,
+        data,
+        2))
+    {
+        printf("VL53 READ ERROR\n");
+        return -1;
     }
 
-    int32_t distance = (data[0] << 8) | data[1];
+    int distance =
+        ((int)data[0] << 8) |
+        data[1];
+
     distance += CALIBRATION_OFFSET_MM;
 
-    if (distance < 0) distance = 0;
-
-    printf("Distance sensor: %d mm\n", (int)distance);
+    if(distance < 0)
+    {
+        distance = 0;
+    }
 
     uint8_t clear = 0x01;
-    iic_write_register(IIC0, SENSOR_ADDR, VL53_CLEAR_INT, &clear, 1);
 
-    return 0;
+    iic_write_register(
+        IIC0,
+        SENSOR_ADDR,
+        VL53_CLEAR_INT,
+        &clear,
+        1
+    );
+
+    printf("DISTANCE = %d mm\n", distance);
+
+    return distance;
 }
 
-static void sweep_right_until_wall(void)
+
+
+static int sweep_right_for_object(orientation_t *ori)
 {
     while(1)
     {
-        // curved movement
-        stepper_set_speed(30000, 15000);
-        stepper_steps(100, 10);
+        turn_degree();
 
-        sleep_msec(40);
+        rotate_orientation(ori, 1.0f);
+
+        print_orientation(ori);
 
         int dist = vl53_read_distance();
 
-        // stop condition
+        printf("DIST = %d mm\n", dist);
+
         if(dist > 0 && dist < 300)
         {
             printf("OBJECT DETECTED\n");
+
+            printf("TARGET HEADING = %.2f\n",
+                   get_heading(ori));
+
+            return dist;
             break;
         }
+
+        if(ori->theta >= 89.0f)
+        {
+            printf("SWEEP COMPLETE\n");
+
+            return -1;
+        }
+
+        sleep_msec(100);
     }
 }
