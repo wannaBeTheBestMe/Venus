@@ -1,0 +1,515 @@
+import sys
+import math
+import paho.mqtt.client as mqtt
+from datetime import datetime
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QGraphicsScene, QGraphicsView,
+    QGraphicsRectItem, QGraphicsTextItem,
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+    QLabel, QTextBrowser, QListWidget,
+    QPushButton, QFileDialog, QMessageBox
+)
+
+from PyQt6.QtGui import (
+    QBrush, QPen, QColor, QFont,
+    QPainter, QPixmap, QPolygonF
+)
+
+from PyQt6.QtCore import (
+    Qt, QThread, pyqtSignal,
+    QTimer, QPointF
+)
+
+# ---------------- CONFIG ----------------
+SCALE = 4
+ROBOT_SIZE = 40
+SENSOR_OFFSET_CM = 6.0  
+
+# --- NEON COLOR PALETTE ---
+CYAN = "#00FFFF"
+MAGENTA = "#FF00FF"
+AMBER = "#FFAB00"
+RED_ALERT = "#FF2A2A"
+GRID_BLUE = "#101D35"
+PANEL_BG = "#11111A"
+APP_BG = "#050509"
+
+# ---------------- STYLESHEET (FUTURISTIC MINIMALIST) ----------------
+STYLESHEET = f"""
+QMainWindow {{ background-color: {APP_BG}; }}
+
+QGroupBox {{
+    background-color: {PANEL_BG};
+    border: none;
+    border-radius: 10px;
+    margin-top: 25px;
+    font-weight: bold;
+    color: #FFFFFF;
+    font-size: 14px;
+    font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+}}
+
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0px 10px;
+    color: #4A5568;
+    letter-spacing: 2px;
+}}
+
+QLabel {{
+    color: #A0AEC0;
+    background-color: transparent;
+    font-family: "Consolas", monospace;
+    font-size: 13px;
+}}
+
+QTextBrowser, QListWidget {{
+    background-color: #0A0A0F;
+    border: 1px solid #1A1A24;
+    border-radius: 6px;
+    color: #E2E8F0;
+    font-family: "Consolas", monospace;
+    font-size: 12px;
+    padding: 8px;
+}}
+
+/* Custom Scrollbar for a sleek look */
+QScrollBar:vertical {{
+    border: none;
+    background: #0A0A0F;
+    width: 8px;
+    border-radius: 4px;
+}}
+QScrollBar::handle:vertical {{
+    background: #2D3748;
+    min-height: 20px;
+    border-radius: 4px;
+}}
+
+QPushButton {{
+    background-color: #1A202C;
+    color: {CYAN};
+    border-radius: 6px;
+    border: 1px solid {CYAN};
+    padding: 8px;
+    font-family: "Segoe UI", sans-serif;
+    font-weight: bold;
+    letter-spacing: 1px;
+}}
+
+QPushButton:hover {{
+    background-color: {CYAN};
+    color: #000000;
+}}
+"""
+
+# ---------------- ROCK ----------------
+class RockSample(QGraphicsRectItem):
+    def __init__(self, x, y, size_cm, color_str, temp):
+        display_size = size_cm * SCALE
+        super().__init__(0, 0, display_size, display_size)
+        self.setPos(x * SCALE - display_size / 2, y * SCALE - display_size / 2)
+        
+        # Give rocks a slightly glowing border
+        self.setBrush(QBrush(QColor(color_str)))
+        self.setPen(QPen(QColor("#FFFFFF"), 1))
+        self.setToolTip(f"Rock\nColor: {color_str}\nSize: {size_cm}cm\nTemp: {temp}°C")
+
+# ---------------- MQTT ----------------
+class MQTTWorker(QThread):
+    message_received = pyqtSignal(str, str)
+    def __init__(self, robot_name, username, password, topic):
+        super().__init__()
+        self.robot_name = robot_name
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self.client.username_pw_set(username, password)
+        self.topic = topic
+
+    def run(self):
+        BROKER = "mqtt.ics.ele.tue.nl"
+        def on_message(client, userdata, msg):
+            payload = msg.payload.decode("utf-8")
+            self.message_received.emit(self.robot_name, payload)
+        self.client.on_message = on_message
+        self.client.connect(BROKER, 1883, 60)
+        self.client.subscribe(self.topic)
+        self.client.loop_forever()
+
+    def publish_message(self, topic, payload):
+        self.client.publish(topic, payload)
+
+# ---------------- DASHBOARD ----------------
+class VenusDashboard(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Venus Ground Station // SYSTEM SECURE")
+        self.resize(1300, 1000)
+        self.setStyleSheet(STYLESHEET)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(20, 20, 20, 20) # Add breathing room to the edges
+        main_layout.setSpacing(20)
+
+        left_col = QWidget()
+        left_layout = QVBoxLayout(left_col)
+        left_layout.setContentsMargins(0,0,0,0)
+
+        right_col = QWidget()
+        right_layout = QVBoxLayout(right_col)
+        right_layout.setContentsMargins(0,0,0,0)
+
+        main_layout.addWidget(left_col, stretch=3)
+        main_layout.addWidget(right_col, stretch=1)
+
+        self.setup_map_panel(left_layout)
+        self.setup_log_panel(left_layout)
+
+        self.setup_telemetry_panel(right_layout)
+        self.setup_findings_panel(right_layout)
+        self.setup_controls_panel(right_layout)
+
+        # Timers
+        self.timer41 = QTimer()
+        self.timer80 = QTimer()
+        self.timer41.timeout.connect(lambda: self.set_offline("Robot41"))
+        self.timer80.timeout.connect(lambda: self.set_offline("Robot80"))
+
+        # MQTT
+        self.workerA = MQTTWorker("Robot41", "robot_41_1", "t7gIhbJF", "/pynqbridge/41/send")
+        self.workerB = MQTTWorker("Robot80", "robot_80_1", "OQfY8Km2", "/pynqbridge/80/send")
+        self.workerA.message_received.connect(self.handle_message)
+        self.workerB.message_received.connect(self.handle_message)
+        self.workerA.start()
+        self.workerB.start()
+
+    # ---------------- UI ----------------
+    def setup_map_panel(self, parent_layout):
+        group = QGroupBox("TACTICAL MAP")
+        layout = QVBoxLayout(group)
+        self.scene = QGraphicsScene(-150 * SCALE, -150 * SCALE, 300 * SCALE, 300 * SCALE)
+        self.view = QGraphicsView(self.scene)
+        
+        # Pure black map background for high contrast
+        self.view.setBackgroundBrush(QBrush(QColor("#000000")))
+        self.view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.view.setStyleSheet("border: none; border-radius: 6px;")
+        
+        layout.addWidget(self.view)
+        parent_layout.addWidget(group, stretch=2)
+        self.draw_guides()
+        self.initialize_robots()
+
+    def setup_log_panel(self, parent_layout):
+        group = QGroupBox("DATA STREAM")
+        layout = QVBoxLayout(group)
+        self.log_widget = QTextBrowser()
+        layout.addWidget(self.log_widget)
+        parent_layout.addWidget(group, stretch=1)
+
+    def setup_telemetry_panel(self, parent_layout):
+        group = QGroupBox("TELEMETRY")
+        layout = QVBoxLayout(group)
+
+        self.status_41_label = QLabel("OFFLINE")
+        self.pos_41_label = QLabel("X: --- | Y: ---")
+        layout.addWidget(QLabel(f"<span style='color:{CYAN};'>■</span> UNIT_41 [ALPHA]"))
+        layout.addWidget(self.status_41_label)
+        layout.addWidget(self.pos_41_label)
+
+        self.status_80_label = QLabel("OFFLINE")
+        self.pos_80_label = QLabel("X: --- | Y: ---")
+        layout.addWidget(QLabel(f"<br><span style='color:{MAGENTA};'>■</span> UNIT_80 [BRAVO]"))
+        layout.addWidget(self.status_80_label)
+        layout.addWidget(self.pos_80_label)
+
+        parent_layout.addWidget(group)
+
+    def setup_findings_panel(self, parent_layout):
+        group = QGroupBox("ANOMALY LOG")
+        layout = QVBoxLayout(group)
+        self.findings_list = QListWidget()
+        layout.addWidget(self.findings_list)
+        parent_layout.addWidget(group)
+
+    def setup_controls_panel(self, parent_layout):
+        group = QGroupBox("SYS_COMMS")
+        layout = QVBoxLayout(group)
+        
+        btn_fit = QPushButton("CALIBRATE VIEW")
+        btn_fit.clicked.connect(self.zoom_to_fit)
+        
+        btn_clear = QPushButton("PURGE DATA")
+        btn_clear.clicked.connect(self.clear_all)
+        
+        layout.addWidget(btn_fit)
+        layout.addWidget(btn_clear)
+        parent_layout.addWidget(group)
+
+    # ---------------- MAP ----------------
+    def draw_guides(self):
+        # Subtle radar-style blue grid instead of gray
+        grid_pen = QPen(QColor(GRID_BLUE), 1)
+        for i in range(-150, 151, 10):
+            self.scene.addLine(i * SCALE, -150 * SCALE, i * SCALE, 150 * SCALE, grid_pen)
+            self.scene.addLine(-150 * SCALE, i * SCALE, 150 * SCALE, i * SCALE, grid_pen)
+            
+        # Draw a bright origin crosshair
+        origin_pen = QPen(QColor("#3A506B"), 2)
+        self.scene.addLine(-10*SCALE, 0, 10*SCALE, 0, origin_pen)
+        self.scene.addLine(0, -10*SCALE, 0, 10*SCALE, origin_pen)
+
+    def initialize_robots(self):
+        # Robot 41: Cyan
+        poly41 = QPolygonF([QPointF(0, -ROBOT_SIZE/2), QPointF(ROBOT_SIZE/2.5, ROBOT_SIZE/2), QPointF(0, ROBOT_SIZE/4), QPointF(-ROBOT_SIZE/2.5, ROBOT_SIZE/2)])
+        self.robot41_marker = self.scene.addPolygon(poly41, QPen(QColor(CYAN), 2), QBrush(QColor("#002222")))
+        self.robot41_marker.setTransformOriginPoint(0, 0)
+
+        # Robot 80: Magenta
+        poly80 = QPolygonF([QPointF(0, -ROBOT_SIZE/2), QPointF(ROBOT_SIZE/2.5, ROBOT_SIZE/2), QPointF(0, ROBOT_SIZE/4), QPointF(-ROBOT_SIZE/2.5, ROBOT_SIZE/2)])
+        self.robot80_marker = self.scene.addPolygon(poly80, QPen(QColor(MAGENTA), 2), QBrush(QColor("#220022")))
+        self.robot80_marker.setTransformOriginPoint(0, 0)
+
+        self.robot41_marker.setPos(0, 0)
+        self.robot80_marker.setPos(0, 0)
+        self.robot41_angle = 90
+        self.robot80_angle = 90
+        self.robot41_marker.setRotation(90)
+        self.robot80_marker.setRotation(90)
+        
+        self.tape_hits = []
+
+    def draw_arena_boundary(self):
+        try:
+            p1, p2, p3 = self.tape_hits[0], self.tape_hits[1], self.tape_hits[2]
+            KNOWN_SIZE = 150 * SCALE
+
+            dx, dy = p3[0] - p1[0], p3[1] - p1[1]
+            dist = math.hypot(dx, dy)
+            if dist == 0: return
+
+            cos_val = min(1.0, KNOWN_SIZE / dist) 
+            theta = math.atan2(dy, dx) - math.acos(cos_val)
+
+            u_x, u_y = math.cos(theta), math.sin(theta)
+            v_x, v_y = -math.sin(theta), math.cos(theta)
+
+            dp = (p1[0] - p2[0]) * v_x + (p1[1] - p2[1]) * v_y
+            c1_x, c1_y = p2[0] + dp * v_x, p2[1] + dp * v_y
+
+            mid_x, mid_y = (p1[0] + p3[0]) / 2, (p1[1] + p3[1]) / 2
+            best_dist, best_poly = float('inf'), None
+
+            for sign_u in [1, -1]:
+                for sign_v in [1, -1]:
+                    cx = c1_x + (sign_u * KNOWN_SIZE * u_x / 2) + (sign_v * KNOWN_SIZE * v_x / 2)
+                    cy = c1_y + (sign_u * KNOWN_SIZE * u_y / 2) + (sign_v * KNOWN_SIZE * v_y / 2)
+                    if math.hypot(cx - mid_x, cy - mid_y) < best_dist:
+                        best_dist = math.hypot(cx - mid_x, cy - mid_y)
+                        best_poly = QPolygonF([
+                            QPointF(c1_x, c1_y),
+                            QPointF(c1_x + sign_u * KNOWN_SIZE * u_x, c1_y + sign_u * KNOWN_SIZE * u_y),
+                            QPointF(c1_x + sign_u * KNOWN_SIZE * u_x + sign_v * KNOWN_SIZE * v_x, c1_y + sign_u * KNOWN_SIZE * u_y + sign_v * KNOWN_SIZE * v_y),
+                            QPointF(c1_x + sign_v * KNOWN_SIZE * v_x, c1_y + sign_v * KNOWN_SIZE * v_y)
+                        ])
+
+            # Draw glowing red boundary
+            self.scene.addPolygon(best_poly, QPen(QColor(RED_ALERT), 3, Qt.PenStyle.DashLine), QBrush(QColor(255, 42, 42, 10)))
+            self.log_widget.append(f"<span style='color: {RED_ALERT};'>[SYS] BOUNDARY_LOCKED: 150x150cm secure zone established.</span>")
+        except Exception as e:
+            self.log_widget.append(f"<span style='color: #FF0000;'>[ERR] Boundary calc failed: {e}</span>")
+
+    def rotate_robot(self, robot_name, delta):
+        if robot_name == "Robot41":
+            self.robot41_angle += delta
+            self.robot41_marker.setRotation(self.robot41_angle)
+        else:
+            self.robot80_angle += delta
+            self.robot80_marker.setRotation(self.robot80_angle)
+
+    # ---------------- MESSAGE HANDLER ----------------
+    def handle_message(self, robot_name, text):
+        time_str = datetime.now().strftime("%H:%M:%S")
+        is_41 = robot_name == "Robot41"
+        
+        # Color code the incoming logs
+        bot_color = CYAN if is_41 else MAGENTA
+        self.log_widget.append(f"<span style='color: #4A5568;'>[{time_str}]</span> <span style='color: {bot_color}; font-weight: bold;'>[{robot_name}]</span> <span style='color: #E2E8F0;'>{text}</span>")
+
+        # Routing (Silent in the UI to prevent clutter, just do the math)
+        if robot_name == "Robot41": self.workerB.publish_message("/pynqbridge/80/recv", text)
+        elif robot_name == "Robot80": self.workerA.publish_message("/pynqbridge/41/recv", text)
+
+        try:
+            target = self.robot41_marker if is_41 else self.robot80_marker
+            parts = text.strip().split(",")
+            cmd = parts[0]
+
+            # --- MOUNTAIN SCANNING ---
+            if cmd == "SCAN":
+                dist_mm = float(parts[1])
+                if dist_mm > 0 and dist_mm < 800:
+                    dist_cm = dist_mm / 10.0
+                    total_dist_cm = dist_cm + SENSOR_OFFSET_CM
+
+                    old_c = target.sceneBoundingRect().center()
+                    angle_deg = self.robot41_angle if is_41 else self.robot80_angle
+                    angle_rad = math.radians(angle_deg)
+
+                    mountain_x = old_c.x() + (total_dist_cm * SCALE * math.sin(angle_rad))
+                    mountain_y = old_c.y() - (total_dist_cm * SCALE * math.cos(angle_rad))
+
+                    dot_size = 2 * SCALE 
+                    dot = self.scene.addEllipse(
+                        mountain_x - dot_size / 2, mountain_y - dot_size / 2,
+                        dot_size, dot_size,
+                        QPen(Qt.GlobalColor.transparent), QBrush(QColor(AMBER)) 
+                    )
+                    dot.setToolTip(f"Point Cloud\nDist: {dist_cm}cm\nAngle: {round(angle_deg, 1)}°")
+
+            # --- BOUNDARY TAPE ---
+            elif cmd == "STOPBLACK":
+                current_pos = target.scenePos()
+                tx, ty = current_pos.x(), current_pos.y()
+                dot_size = 2 * SCALE 
+                self.scene.addEllipse(tx - dot_size/2, ty - dot_size/2, dot_size, dot_size, 
+                                      QPen(QColor("#FFFFFF"), 1), QBrush(QColor(255, 255, 255, 200)))
+                
+                real_x, real_y = tx / SCALE, ty / SCALE
+                self.tape_hits.append((real_x * SCALE, real_y * SCALE))
+                if len(self.tape_hits) == 3:
+                    self.draw_arena_boundary()
+
+            # --- TRUE ODOMETRY ---
+            elif cmd == "ODOM":
+                steps_l, steps_r = float(parts[1]), float(parts[2])
+                WHEEL_RADIUS, WHEEL_BASE, SPR = 3.75, 12.5, 512.0
+                
+                dist_per_step = (2 * math.pi * WHEEL_RADIUS) / SPR
+                dist_l, dist_r = steps_l * dist_per_step, steps_r * dist_per_step
+                d_center = (dist_l + dist_r) / 2.0
+
+                d_theta_rad = (dist_l - dist_r) / WHEEL_BASE
+                d_theta_deg = math.degrees(d_theta_rad)
+
+                old_pos = target.scenePos()
+                angle_deg = self.robot41_angle if is_41 else self.robot80_angle
+                new_angle_deg = (angle_deg + d_theta_deg) % 360
+                
+                if is_41: self.robot41_angle = new_angle_deg
+                else: self.robot80_angle = new_angle_deg
+
+                avg_angle_rad = math.radians(angle_deg + (d_theta_deg / 2))
+                dx = d_center * SCALE * math.sin(avg_angle_rad)
+                dy = -d_center * SCALE * math.cos(avg_angle_rad)
+
+                nx, ny = old_pos.x() + dx, old_pos.y() + dy
+
+                trail_color = CYAN if is_41 else MAGENTA
+                self.scene.addLine(old_pos.x(), old_pos.y(), nx, ny, QPen(QColor(trail_color), 2, Qt.PenStyle.SolidLine))
+                
+                target.setRotation(new_angle_deg)
+                target.setPos(nx, ny)
+
+                label = self.pos_41_label if is_41 else self.pos_80_label
+                label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
+
+            # --- FINE ROTATION ---
+            elif cmd == "ROT":
+                self.rotate_robot(robot_name, float(parts[1]))
+
+            # =========================================
+            # ORIENTATION (Absolute Compass/IMU Snap)
+            # =========================================
+
+            elif cmd == "ORT":
+                ort_zone = int(parts[1])
+                
+                # Check if the message has the new theta angle, otherwise default to 0
+                theta = float(parts[2]) if len(parts) > 2 else 0.0
+
+                # Determine the base angle of the quadrant
+                base_angle = {
+                    1: 90,     # right / East
+                    2: 180,    # down / South
+                    3: 270,    # left / West
+                    4: 0       # up / North
+                }.get(ort_zone, 0)
+
+                # Calculate absolute angle. 
+                # NOTE: If your robot turns right and the UI turns left, 
+                # just change (base_angle + theta) to (base_angle - theta)
+                absolute_angle = (base_angle + theta) % 360
+
+                if is_41:
+                    self.robot41_angle = absolute_angle
+                else:
+                    self.robot80_angle = absolute_angle
+
+                # Physically snap the UI robot to the new corrected heading
+                target.setRotation(absolute_angle)
+                #self.update_direction_marker(robot_name)
+
+            # --- LEGACY STEPS ---
+            elif cmd == "STEPS":
+                steps = float(parts[1])
+                old_c = target.sceneBoundingRect().center()
+                angle = math.radians(self.robot41_angle if is_41 else self.robot80_angle)
+
+                dx = steps * SCALE * math.sin(angle)
+                dy = -steps * SCALE * math.cos(angle)
+
+                nx, ny = old_c.x() + dx, old_c.y() + dy
+                trail_color = CYAN if is_41 else MAGENTA
+                self.scene.addLine(old_c.x(), old_c.y(), nx, ny, QPen(QColor(trail_color), 2, Qt.PenStyle.SolidLine))
+                
+                target.setPos(nx - ROBOT_SIZE / 2, ny - ROBOT_SIZE / 2)
+
+                label = self.pos_41_label if is_41 else self.pos_80_label
+                label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
+
+            # --- ROCK/SAMPLE ---
+            elif cmd == "ROCK":
+                x, y, sz, col, temp = float(parts[1]), float(parts[2]), int(parts[3]), parts[4], float(parts[5])
+                self.scene.addItem(RockSample(x, y, sz, col, temp))
+                self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {temp}°C")
+
+            # --- STATUS UPDATE ---
+            if is_41:
+                self.status_41_label.setText(f"<span style='color: {CYAN};'>● ONLINE</span>")
+                self.timer41.start(3000)
+            else:
+                self.status_80_label.setText(f"<span style='color: {MAGENTA};'>● ONLINE</span>")
+                self.timer80.start(3000)
+
+        except Exception as e:
+            self.log_widget.append(f"<span style='color: {RED_ALERT};'>[SYS_ERR] {e}</span>")
+
+    def set_offline(self, robot_name):
+        if robot_name == "Robot41":
+            self.status_41_label.setText("<span style='color: #4A5568;'>○ OFFLINE</span>")
+        else:
+            self.status_80_label.setText("<span style='color: #4A5568;'>○ OFFLINE</span>")
+
+    def zoom_to_fit(self):
+        rect = self.scene.itemsBoundingRect()
+        if not rect.isNull():
+            rect.adjust(-50, -50, 50, 50)
+            self.view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def clear_all(self):
+        self.scene.clear()
+        self.draw_guides()
+        self.initialize_robots()
+        self.log_widget.clear()
+        self.findings_list.clear()
+
+# ---------------- MAIN ----------------
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = VenusDashboard()
+    window.show()
+    sys.exit(app.exec())
