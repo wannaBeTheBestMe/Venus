@@ -24,7 +24,7 @@ from PyQt6.QtCore import (
 # ---------------- CONFIG ----------------
 
 SCALE = 4
-ROBOT_SIZE = 40
+ROBOT_SIZE = 20
 
 # ---------------- STYLES ----------------
 
@@ -387,12 +387,12 @@ class VenusDashboard(QMainWindow):
 
         self.robot41_dir = self.scene.addLine(
             0, 0, 0, -20,
-            QPen(QColor("red"), 3)
+            QPen(QColor("white"), 2)
         )
 
         self.robot80_dir = self.scene.addLine(
             0, 0, 0, -20,
-            QPen(QColor("yellow"), 3)
+            QPen(QColor("white"), 2)
         )
 
         self.update_direction_marker("Robot41")
@@ -418,10 +418,10 @@ class VenusDashboard(QMainWindow):
 
         angle = math.radians(angle_deg)
 
-        length = 20
+        radius = ROBOT_SIZE / 2
 
-        end_x = center.x() + length * math.sin(angle)
-        end_y = center.y() - length * math.cos(angle)
+        end_x = center.x() + radius * math.sin(angle)
+        end_y = center.y() - radius * math.cos(angle)
 
         line.setLine(
             center.x(),
@@ -470,15 +470,9 @@ class VenusDashboard(QMainWindow):
             if cmd == "ORT":
 
                 ort = int(parts[1])
+                theta = float(parts[2])
 
-                angle_map = {
-                    1: 90,     # right
-                    2: 180,    # down
-                    3: 270,    # left
-                    4: 0       # up
-                }
-
-                angle = angle_map.get(ort, 0)
+                angle = ((ort - 1) * 90.0) + theta
 
                 if is_41:
                     self.robot41_angle = angle
@@ -486,6 +480,7 @@ class VenusDashboard(QMainWindow):
                     self.robot80_angle = angle
 
                 self.update_direction_marker(robot_name)
+
 
             # =========================================
             # STEPS
