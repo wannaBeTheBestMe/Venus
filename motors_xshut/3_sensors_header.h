@@ -22,7 +22,7 @@
 
 // #define SENSOR_TIMEOUT_MS 100
 
-#define MAX_RANGE_MM 2000 // For the forward dist sensor
+#define MAX_RANGE_MM 300 // For the forward dist sensor
 #define MAX_OVERHEAD_RANGE_MM 90
 
 /* ─── TCS34725 registers ────────────────────────────────────────────────── */
@@ -186,23 +186,121 @@ bool change_address(uint8_t from, uint8_t to)
 //     return dist;
 // }
 
+// int32_t read_distance_forward(void)
+// {
+//     uint8_t status = 0;
+//     int elapsed = 0;
+//     do {
+// 	sleep_msec(2);
+//         if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x14, &status, 1))
+//         {
+//             printf("  | Forward dist: SENSOR DISCONNECTED\n");
+//             return -1;
+//         }
+//         elapsed++;
+//         if (elapsed >= 10000)
+//         {
+//             printf("  | Forward dist: TIMEOUT\n");
+//             return -1;
+//         }
+//     } while ((status & 0x01) == 0);
+// 
+//     uint8_t data[2];
+//     if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2))
+//     {
+//         printf("  | Forward dist: SENSOR DISCONNECTED\n");
+//         return -1;
+//     }
+// 
+//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
+// 
+//     if (dist < 0 || dist > MAX_RANGE_MM)
+//     {
+//         printf("  | Forward dist: OUT OF RANGE\n");
+//         return -1;
+//     }
+// 
+//     uint8_t clear = 0x01;
+//     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
+// 
+//     printf("  | Forward dist: %4d mm\n", (int)dist);
+//     return dist;
+// }
+
+// int32_t read_distance_forward(void)
+// {
+//     uint8_t status = 0;
+//     int elapsed = 0;
+//     do {
+//         sleep_msec(2);
+//         if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x13, &status, 1))
+//         {
+//             printf("  | Forward dist: SENSOR DISCONNECTED\n");
+//             return -1;
+//         }
+//         elapsed++;
+//         if (elapsed >= 50)
+//         {
+//             printf("  | Forward dist: TIMEOUT\n");
+//             return -1;
+//         }
+//     } while ((status & 0x07) == 0);  // wait for bits [2:0] non-zero
+// 
+//     uint8_t data[2];
+//     if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2))
+//     {
+//         printf("  | Forward dist: SENSOR DISCONNECTED\n");
+//         return -1;
+//     }
+// 
+//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
+// 
+//     if (dist < 0 || dist > MAX_RANGE_MM)
+//     {
+//         printf("  | Forward dist: OUT OF RANGE\n");
+//         return -1;
+//     }
+// 
+//     uint8_t clear = 0x01;
+//     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
+// 
+//     printf("  | Forward dist: %4d mm\n", (int)dist);
+//     return dist;
+// }
+
+// int32_t read_distance_overhead(void)
+// {
+//     uint8_t trig = 0x01;
+//     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &trig, 1);
+//     sleep_msec(40);
+// 
+//     uint8_t data[2];
+//     if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x1E, data, 2))
+//     {
+//         printf("  | Overhead dist: ERROR\n");
+//         return -1;
+//     }
+// 
+//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
+//     if (dist < 0) dist = 0;
+// 
+//     uint8_t clear = 0x01;
+//     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x0B, &clear, 1);
+// 
+//     printf("  | Overhead dist: %4d mm\n", (int)dist);
+//     return dist;
+// }
+
 int32_t read_distance_forward(void)
 {
-    uint8_t status = 0;
-    int elapsed = 0;
-    do {
-        if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x14, &status, 1))
-        {
-            printf("  | Forward dist: SENSOR DISCONNECTED\n");
-            return -1;
-        }
-        elapsed++;
-        if (elapsed >= 10000)
-        {
-            printf("  | Forward dist: TIMEOUT\n");
-            return -1;
-        }
-    } while ((status & 0x01) == 0);
+    uint8_t trig = 0x01;
+    if (iic_write_register(IIC0, SENSOR2_ADDRESS, 0x00, &trig, 1))
+    {
+        printf("  | Forward dist: SENSOR DISCONNECTED\n");
+        return -1;
+    }
+
+    sleep_msec(30);
 
     uint8_t data[2];
     if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2))
@@ -228,19 +326,36 @@ int32_t read_distance_forward(void)
 
 // int32_t read_distance_overhead(void)
 // {
-//     uint8_t trig = 0x01;
-//     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &trig, 1);
-//     sleep_msec(40);
+//     uint8_t status = 0;
+//     int elapsed = 0;
+//     do {
+//         if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x14, &status, 1))
+//         {
+//             printf("  | Overhead dist: SENSOR DISCONNECTED\n");
+//             return -1;
+//         }
+//         elapsed++;
+//         if (elapsed >= 10000)
+//         {
+//             printf("  | Overhead dist: TIMEOUT\n");
+//             return -1;
+//         }
+//     } while ((status & 0x01) == 0);
 // 
 //     uint8_t data[2];
 //     if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x1E, data, 2))
 //     {
-//         printf("  | Overhead dist: ERROR\n");
+//         printf("  | Overhead dist: SENSOR DISCONNECTED\n");
 //         return -1;
 //     }
 // 
 //     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
-//     if (dist < 0) dist = 0;
+// 
+//     if (dist < 0 || dist > MAX_OVERHEAD_RANGE_MM)
+//     {
+//         printf("  | Overhead dist: OUT OF RANGE\n");
+//         return -1;
+//     }
 // 
 //     uint8_t clear = 0x01;
 //     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x0B, &clear, 1);
@@ -251,21 +366,14 @@ int32_t read_distance_forward(void)
 
 int32_t read_distance_overhead(void)
 {
-    uint8_t status = 0;
-    int elapsed = 0;
-    do {
-        if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x14, &status, 1))
-        {
-            printf("  | Overhead dist: SENSOR DISCONNECTED\n");
-            return -1;
-        }
-        elapsed++;
-        if (elapsed >= 10000)
-        {
-            printf("  | Overhead dist: TIMEOUT\n");
-            return -1;
-        }
-    } while ((status & 0x01) == 0);
+    uint8_t trig = 0x01;
+    if (iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &trig, 1))
+    {
+        printf("  | Overhead dist: SENSOR DISCONNECTED\n");
+        return -1;
+    }
+
+    sleep_msec(30);
 
     uint8_t data[2];
     if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x1E, data, 2))
@@ -528,6 +636,89 @@ ColorReading read_color(const Cal *cal)
 //     return true;
 // }
 
+// bool all_sensors_init()
+// {
+//     gpio_set_direction(XSHUT_PIN_1, GPIO_DIR_OUTPUT);
+//     gpio_set_direction(XSHUT_PIN_2, GPIO_DIR_OUTPUT);
+// 
+//     switchbox_set_pin(IO_AR_SCL, SWB_IIC0_SCL);
+//     switchbox_set_pin(IO_AR_SDA, SWB_IIC0_SDA);
+//     iic_init(IIC0);
+// 
+//     /* ── Distance sensor setup ── */
+// 
+//     // Hold both in reset
+//     gpio_set_level(XSHUT_PIN_1, GPIO_LEVEL_LOW);
+//     gpio_set_level(XSHUT_PIN_2, GPIO_LEVEL_LOW);
+//     sleep_msec(10);
+// 
+//     // Wake sensor 1, move to 0x30
+//     printf("\n--- Initializing distance sensor 1 ---\n");
+//     gpio_set_level(XSHUT_PIN_1, GPIO_LEVEL_HIGH);
+//     sleep_msec(10);
+//     if (!change_address(DEFAULT_ADDRESS, SENSOR1_ADDRESS))
+//     {
+//         return false;
+//     }
+// 
+//     // Wake sensor 2, move to 0x31
+//     printf("\n--- Initializing distance sensor 2 ---\n");
+//     gpio_set_level(XSHUT_PIN_2, GPIO_LEVEL_HIGH);
+//     sleep_msec(10);
+//     if (!change_address(DEFAULT_ADDRESS, SENSOR2_ADDRESS))
+//     {
+//         return false;
+//     }
+// 
+//     // Init ranging on both
+//     if (!init_sensor(SENSOR1_ADDRESS) || !init_sensor(SENSOR2_ADDRESS))
+//     {
+//         return false;
+//     }
+// 
+//     // Start continuous mode on both distance sensors
+//     printf("\n--- Starting continuous measurement mode ---\n");
+//     uint8_t period = 0x04; // 90ms measurement period
+//     uint8_t cont   = 0x02; // continuous mode flag
+// 
+//     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x04, &period, 1);
+//     if (iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &cont, 1))
+//     {
+//         printf("ERROR: could not start continuous mode on sensor 1\n");
+//         return false;
+//     }
+//     printf("Sensor 1 continuous mode started\n");
+// 
+//     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x04, &period, 1);
+//     if (iic_write_register(IIC0, SENSOR2_ADDRESS, 0x00, &cont, 1))
+//     {
+//         printf("ERROR: could not start continuous mode on sensor 2\n");
+//         return false;
+//     }
+//     printf("Sensor 2 continuous mode started\n");
+// 
+//     /* ── Color sensor setup ── */
+//     printf("\n--- Initializing color sensor ---\n");
+//     uint8_t id = 0;
+//     if (iic_read_register(IIC0, TCS_ADDR, REG_ID, &id, 1))
+//     {
+//         printf("ERROR: cannot read color sensor — check wiring\n");
+//         return false;
+//     }
+//     if (id != 0x44 && id != 0x4D)
+//         printf("WARNING: unexpected color sensor ID 0x%02X\n", id);
+//     else
+//         printf("Color sensor ID 0x%02X — OK\n", id);
+// 
+//     write8(REG_ENABLE,  0x03);
+//     write8(REG_ATIME,   ATIME);
+//     write8(REG_WTIME,   WTIME);
+//     write8(REG_CONTROL, GAIN);
+//     sleep_msec(1300);
+// 
+//     return true;
+// }
+
 bool all_sensors_init()
 {
     gpio_set_direction(XSHUT_PIN_1, GPIO_DIR_OUTPUT);
@@ -567,27 +758,6 @@ bool all_sensors_init()
     {
         return false;
     }
-
-    // Start continuous mode on both distance sensors
-    printf("\n--- Starting continuous measurement mode ---\n");
-    uint8_t period = 0x09; // 90ms measurement period
-    uint8_t cont   = 0x02; // continuous mode flag
-
-    iic_write_register(IIC0, SENSOR1_ADDRESS, 0x04, &period, 1);
-    if (iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &cont, 1))
-    {
-        printf("ERROR: could not start continuous mode on sensor 1\n");
-        return false;
-    }
-    printf("Sensor 1 continuous mode started\n");
-
-    iic_write_register(IIC0, SENSOR2_ADDRESS, 0x04, &period, 1);
-    if (iic_write_register(IIC0, SENSOR2_ADDRESS, 0x00, &cont, 1))
-    {
-        printf("ERROR: could not start continuous mode on sensor 2\n");
-        return false;
-    }
-    printf("Sensor 2 continuous mode started\n");
 
     /* ── Color sensor setup ── */
     printf("\n--- Initializing color sensor ---\n");
