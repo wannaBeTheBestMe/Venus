@@ -453,20 +453,34 @@ class VenusDashboard(QMainWindow):
                 target.setRotation(absolute_angle)
                 #self.update_direction_marker(robot_name)
 
-            # --- LEGACY STEPS ---
+            # =========================================
+            # STEPS (Legacy Straight-Line Driving)
+            # =========================================
             elif cmd == "STEPS":
                 steps = float(parts[1])
-                old_c = target.sceneBoundingRect().center()
-                angle = math.radians(self.robot41_angle if is_41 else self.robot80_angle)
 
+                # Get the true center position
+                old_pos = target.scenePos()
+
+                if is_41:
+                    angle_deg = self.robot41_angle
+                else:
+                    angle_deg = self.robot80_angle
+
+                angle = math.radians(angle_deg)
+
+                # Calculate movement vector
                 dx = steps * SCALE * math.sin(angle)
                 dy = -steps * SCALE * math.cos(angle)
 
-                nx, ny = old_c.x() + dx, old_c.y() + dy
+                nx = old_pos.x() + dx
+                ny = old_pos.y() + dy
+
+                # Set position directly to the center (no clunky offsets!)
+                target.setPos(nx, ny)
+
                 trail_color = CYAN if is_41 else MAGENTA
-                self.scene.addLine(old_c.x(), old_c.y(), nx, ny, QPen(QColor(trail_color), 2, Qt.PenStyle.SolidLine))
-                
-                target.setPos(nx - ROBOT_SIZE / 2, ny - ROBOT_SIZE / 2)
+                self.scene.addLine(old_pos.x(), old_pos.y(), nx, ny, QPen(QColor(trail_color), 2, Qt.PenStyle.SolidLine))
 
                 label = self.pos_41_label if is_41 else self.pos_80_label
                 label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
@@ -475,6 +489,24 @@ class VenusDashboard(QMainWindow):
             elif cmd == "ROCK":
                 x, y, sz, col, temp = float(parts[1]), float(parts[2]), int(parts[3]), parts[4], float(parts[5])
                 self.scene.addItem(RockSample(x, y, sz, col, temp))
+                self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {temp}°C")
+
+            # --- AUTO-LOCATING ROCK ---
+            elif cmd == "FOUND_ROCK":
+                # Expected format: FOUND_ROCK,size,color,temperature (e.g., FOUND_ROCK,5,red,45.0)
+                sz = int(parts[1])
+                col = parts[2]
+                temp = float(parts[3])
+
+                # Grab the robot's exact current coordinate from the physics engine!
+                current_pos = target.scenePos()
+                
+                # Convert UI pixels back to real-world centimeters
+                real_x = current_pos.x() / SCALE
+                real_y = current_pos.y() / SCALE
+
+                # Drop the rock exactly under the robot
+                self.scene.addItem(RockSample(real_x, real_y, sz, col, temp))
                 self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {temp}°C")
 
             # --- STATUS UPDATE ---
