@@ -22,7 +22,9 @@
 
 // #define SENSOR_TIMEOUT_MS 100
 
-#define MAX_RANGE_MM 300 // For the forward dist sensor
+#define MAX_FORWARD_DELTA_MM 100
+
+#define MAX_RANGE_MM 500 // For the forward dist sensor
 #define MAX_OVERHEAD_RANGE_MM 90
 
 /* ─── TCS34725 registers ────────────────────────────────────────────────── */
@@ -118,31 +120,6 @@ bool change_address(uint8_t from, uint8_t to)
     return false;
 }
 
-// Dist2 = forward
-// int32_t read_distance_forward(void)
-// {
-//     uint8_t trig = 0x01;
-//     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x00, &trig, 1);
-//     sleep_msec(INTER_READING_DELAY_DIST_FORW_MS);
-// 
-//     uint8_t data[2];
-//     if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2))
-//     {
-//         printf("  | Forward dist: ERROR\n");
-//         return -1;
-//     }
-// 
-//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
-//     if (dist < 0) dist = 0;
-// 
-//     uint8_t clear = 0x01;
-//     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
-// 
-//     printf("  | Forward dist: %4d mm\n", (int)dist);
-//     return dist;
-// }
-
-
 // int32_t read_distance_forward(void)
 // {
 //     uint8_t trig = 0x01;
@@ -152,58 +129,7 @@ bool change_address(uint8_t from, uint8_t to)
 //         return -1;
 //     }
 // 
-//     uint8_t status = 0;
-//     int elapsed = 0;
-//     do {
-//         if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x14, &status, 1))
-//         {
-//             printf("  | Forward dist: SENSOR DISCONNECTED\n");
-//             return -1;
-//         }
-//         sleep_msec(1);
-//         elapsed++;
-//         if (elapsed >= SENSOR_TIMEOUT_MS)
-//         {
-//             printf("  | Forward dist: TIMEOUT\n");
-//             return -1;
-//         }
-//     } while ((status & 0x01) == 0);
-// 
-//     uint8_t data[2];
-//     if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2))
-//     {
-//         printf("  | Forward dist: SENSOR DISCONNECTED\n");
-//         return -1;
-//     }
-// 
-//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
-//     if (dist < 0) dist = 0;
-// 
-//     uint8_t clear = 0x01;
-//     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
-// 
-//     printf("  | Forward dist: %4d mm\n", (int)dist);
-//     return dist;
-// }
-
-// int32_t read_distance_forward(void)
-// {
-//     uint8_t status = 0;
-//     int elapsed = 0;
-//     do {
-// 	sleep_msec(2);
-//         if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x14, &status, 1))
-//         {
-//             printf("  | Forward dist: SENSOR DISCONNECTED\n");
-//             return -1;
-//         }
-//         elapsed++;
-//         if (elapsed >= 10000)
-//         {
-//             printf("  | Forward dist: TIMEOUT\n");
-//             return -1;
-//         }
-//     } while ((status & 0x01) == 0);
+//     sleep_msec(30);
 // 
 //     uint8_t data[2];
 //     if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2))
@@ -224,75 +150,13 @@ bool change_address(uint8_t from, uint8_t to)
 //     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
 // 
 //     printf("  | Forward dist: %4d mm\n", (int)dist);
-//     return dist;
-// }
-
-// int32_t read_distance_forward(void)
-// {
-//     uint8_t status = 0;
-//     int elapsed = 0;
-//     do {
-//         sleep_msec(2);
-//         if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x13, &status, 1))
-//         {
-//             printf("  | Forward dist: SENSOR DISCONNECTED\n");
-//             return -1;
-//         }
-//         elapsed++;
-//         if (elapsed >= 50)
-//         {
-//             printf("  | Forward dist: TIMEOUT\n");
-//             return -1;
-//         }
-//     } while ((status & 0x07) == 0);  // wait for bits [2:0] non-zero
-// 
-//     uint8_t data[2];
-//     if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2))
-//     {
-//         printf("  | Forward dist: SENSOR DISCONNECTED\n");
-//         return -1;
-//     }
-// 
-//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
-// 
-//     if (dist < 0 || dist > MAX_RANGE_MM)
-//     {
-//         printf("  | Forward dist: OUT OF RANGE\n");
-//         return -1;
-//     }
-// 
-//     uint8_t clear = 0x01;
-//     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
-// 
-//     printf("  | Forward dist: %4d mm\n", (int)dist);
-//     return dist;
-// }
-
-// int32_t read_distance_overhead(void)
-// {
-//     uint8_t trig = 0x01;
-//     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &trig, 1);
-//     sleep_msec(40);
-// 
-//     uint8_t data[2];
-//     if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x1E, data, 2))
-//     {
-//         printf("  | Overhead dist: ERROR\n");
-//         return -1;
-//     }
-// 
-//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
-//     if (dist < 0) dist = 0;
-// 
-//     uint8_t clear = 0x01;
-//     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x0B, &clear, 1);
-// 
-//     printf("  | Overhead dist: %4d mm\n", (int)dist);
 //     return dist;
 // }
 
 int32_t read_distance_forward(void)
 {
+    static int32_t last_valid = -1;
+
     uint8_t trig = 0x01;
     if (iic_write_register(IIC0, SENSOR2_ADDRESS, 0x00, &trig, 1))
     {
@@ -314,12 +178,22 @@ int32_t read_distance_forward(void)
     if (dist < 0 || dist > MAX_RANGE_MM)
     {
         printf("  | Forward dist: OUT OF RANGE\n");
+        last_valid = -1;
+        return -1;
+    }
+
+    // Reject implausible jumps
+    if (last_valid >= 0 && abs(dist - last_valid) > MAX_FORWARD_DELTA_MM)
+    {
+        printf("  | Forward dist: REJECTED (jump %d -> %d mm)\n",
+               (int)last_valid, (int)dist);
         return -1;
     }
 
     uint8_t clear = 0x01;
     iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
 
+    last_valid = dist;
     printf("  | Forward dist: %4d mm\n", (int)dist);
     return dist;
 }
