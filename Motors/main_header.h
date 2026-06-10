@@ -425,6 +425,7 @@ static void turn_degree(void)
 
 int tcs_channel = -1;
 int vl53_channel = -1;
+int vl53_channel2 = -1;
 
 bool mux_select_channel(uint8_t channel)
 {
@@ -432,40 +433,57 @@ bool mux_select_channel(uint8_t channel)
     return iic_write_register(IIC0, PCA9548A_ADDR, 0x00, &mux_state, 1);
 }
 
-int detect_sensors(void)
-{
-    for (int ch = 0; ch < 8; ch++) {
-        mux_select_channel(ch);
-        sleep_msec(50);
+ int detect_sensors(void)
+ {
+     for (int ch = 0; ch < 8; ch++) {
+         mux_select_channel(ch);
+         sleep_msec(50);
+         
 
-        uint8_t id = 0;
+         uint8_t id = 0;
 
-        if (!iic_read_register(IIC0, SENSOR_ADDR, TCS_REG_ID, &id, 1)) {
+         id = 0;
+
+        int err = iic_read_register(IIC0, SENSOR_ADDR, TCS_REG_ID, &id, 1);
+
+        printf("CH %d TCS err=%d ID=0x%02X\n", ch, err, id);
+
+        if (err == 0) {
             if (id == 0x44 || id == 0x4D) {
-                tcs_channel = ch;
-                printf("TCS3472 found on channel %d, ID = 0x%02X\n", ch, id);
+        tcs_channel = ch;
+        printf("TCS3472 found on channel %d, ID = 0x%02X\n", ch, id);
             }
         }
 
-        if (!iic_read_register(IIC0, SENSOR_ADDR, VL53_REG_ID, &id, 1)) {
-            if (id == 0xEE) {
-                vl53_channel = ch;
-                printf("VL53L0X found on channel %d, ID = 0x%02X\n", ch, id);
-            }
-        }
-    }
+         if (!iic_read_register(IIC0, SENSOR_ADDR, VL53_REG_ID, &id, 1)) {
+             if (id == 0xEE) {
+                 if (vl53_channel == -1) {
+                     vl53_channel = ch;
+                     printf("VL53L0X #1 found on channel %d, ID = 0x%02X\n", ch, id);
+                 }
+                 else if (vl53_channel2 == -1) {
+                     vl53_channel2 = ch;
+                     printf("VL53L0X #2 found on channel %d, ID = 0x%02X\n", ch, id);
+                 }   
+             }
+         }
+     }
 
-    if (tcs_channel < 0) {
-        printf("ERROR: TCS3472 not found\n");
-        return 1;
-    }
+     if (tcs_channel < 0) {
+         printf("ERROR: TCS3472 not found\n");
+         return 1;
+     }
 
     if (vl53_channel < 0) {
-        printf("ERROR: VL53L0X not found\n");
+        printf("ERROR: VL53L0X #1 not found\n");
         return 1;
     }
 
-    return 0;
+    if (vl53_channel2 < 0) {
+        printf("WARNING: VL53L0X #2 not found\n");
+    }
+
+     return 0;
 }
 
 void tcs_write8(uint8_t reg, uint8_t value)
@@ -510,72 +528,86 @@ int tcs_read_rgb(void)
 
 int vl53_init(void)
 {
+    uint8_t start = 0x01;
+
     mux_select_channel(vl53_channel);
+    sleep_msec(5);
+
+    if (iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &start, 1)) {
+        printf("VL53 #1 start error\n");
+        return 1;
+    }
+
+    printf("VL53 #1 initialized on channel %d\n", vl53_channel);
+
+    if (vl53_channel2 >= 0) {
+        mux_select_channel(vl53_channel2);
+        sleep_msec(5);
+
+        if (iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &start, 1)) {
+            printf("VL53 #2 start error\n");
+            return 1;
+        }
+
+        printf("VL53 #2 initialized on channel %d\n", vl53_channel2);
+    }
+
+    return 0;
+}
+
+int vl53_read_distance_from_channel(int channel)
+{
+    mux_select_channel(channel);
+    sleep_msec(5);
 
     uint8_t start = 0x01;
 
     if (iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &start, 1)) {
-        printf("VL53L0X start error\n");
-        return 1;
+        printf("VL53 trigger error on channel %d\n", channel);
+        return -1;
     }
-
-    printf("VL53L0X initialized\n");
-    return 0;
-}
-
-int vl53_read_distance(void)
-{
-    mux_select_channel(vl53_channel);
-
-    uint8_t start = 0x01;
-
-    iic_write_register(
-        IIC0,
-        SENSOR_ADDR,
-        VL53_SYSRANGE,
-        &start,
-        1
-    );
 
     sleep_msec(60);
 
     uint8_t data[2];
 
-    if(iic_read_register(
-        IIC0,
-        SENSOR_ADDR,
-        0x1E,
-        data,
-        2))
-    {
-        printf("VL53 READ ERROR\n");
+    if (iic_read_register(IIC0, SENSOR_ADDR, VL53_DISTANCE_REG, data, 2)) {
+        printf("VL53 read error on channel %d\n", channel);
         return -1;
     }
 
-    int distance =
-        ((int)data[0] << 8) |
-        data[1];
+    int distance = ((int)data[0] << 8) | data[1];
 
     distance += CALIBRATION_OFFSET_MM;
 
-    if(distance < 0)
-    {
+    if (distance < 0) {
         distance = 0;
     }
 
     uint8_t clear = 0x01;
-
-    iic_write_register(
-        IIC0,
-        SENSOR_ADDR,
-        VL53_CLEAR_INT,
-        &clear,
-        1
-    );
-
-    printf("DISTANCE = %d mm\n", distance);
+    iic_write_register(IIC0, SENSOR_ADDR, VL53_CLEAR_INT, &clear, 1);
 
     return distance;
+}
+
+int vl53_read_distance(void)
+{
+    if (vl53_channel < 0) {
+        printf("VL53 #1 not available\n");
+        return -1;
+    }
+
+    return vl53_read_distance_from_channel(vl53_channel);
+}
+
+int vl53_read_distance_2(void)
+{
+    if (vl53_channel2 < 0) {
+        printf("VL53 #2 not available\n");
+        return -1;
+    }
+
+    return vl53_read_distance_from_channel(vl53_channel2);
 }
 
 
