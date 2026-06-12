@@ -1,4 +1,12 @@
+
 #include "main_header.h"
+#include "shuffle.h"
+
+struct rock_data_t {
+	enum e_rock_color color;
+	int32_t size;
+	float temp;
+};
 
 int main(void)
 {
@@ -117,7 +125,7 @@ int main(void)
                          // char stp[64];
                          // sprintf(stp, "STEPS,%ld", count);
                          // send_message(stp);
-                         fprintf(stderr, "%s\n", stp);
+                         // fprintf(stderr, "%s\n", stp);
                          print_orientation(&ori);
                          send_orientation(&ori);
                          break;
@@ -332,7 +340,7 @@ int main(void)
             // =========================
             // SWEEP
             // =========================
-            else if(strcmp(MSG, "RSWEEP") == 0)
+            else if(strcmp(MSG, "RSWEEP") == 0 || strcmp(MSG, "RS") == 0)
             {
                 // sweep_right_until_wall();
 		// sweep_right_for_object();
@@ -385,7 +393,7 @@ int main(void)
             {
                 while(1)
                 {
-                    int32_t dist_oh = read_distance_overhead();
+                    int32_t dist_oh = read_distance_overhead_simple();
 		    // printf("Read overhead dist sensor\n"); 
 
                     if (dist_oh >= 0)
@@ -417,6 +425,200 @@ int main(void)
             }
 
 
+	    // HEADING UPDATE
+            else if (strcmp(MSG, "HU") == 0)
+            {
+		heading_update();
+
+                    wait_motion(100);
+            }
+
+	    // FIND AND MAP NEXT OBJECT
+        else if (strcmp(MSG, "O") == 0)
+        {
+		struct rock_data_t rock_data;
+		rock_data.color = NONE;
+		rock_data.size = -1;
+		rock_data.temp = -1.0f;
+		
+		// Should back up a little first to not displace the current object?
+
+	        // RSWEEP 
+		sweep_right_for_object(&ori);
+		print_orientation(&ori);
+		send_orientation(&ori);
+
+		// Moves forward (but only one move unit)
+		read_distance_forward();
+
+                 long count = 0;
+                 int32_t dist = read_distance_forward();
+
+		char stp[64];
+
+		 while (1)
+		 {
+		 dist = read_distance_forward();
+
+                     if(dist >= 0 && dist <= 50)
+                     {
+                         print_orientation(&ori);
+                         send_orientation(&ori);
+
+                        sprintf(stp, "STEPS,%ld", count);
+                        send_message(stp);
+                        fprintf(stderr, "%s\n", stp);
+                         break;
+                     }
+
+                     move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW);
+                     wait_motion(4000);
+                     count++;
+
+		     heading_update();
+
+
+                    if(uart_has_data(UART0))
+                    {
+                        read_uart_message(UART0, MSG);
+
+                        if(strcmp(MSG, "S") == 0)
+                        {
+                            send_orientation(&ori);
+                            break;
+                        }
+                    }
+
+                    wait_motion(100);
+		 }
+
+
+		// Front color sensor reading
+                enum e_rock_color rock_color = identify_rock_color(&cal);
+                if (rock_color == ERROR) { printf("Color front: total error\n"); continue; }
+
+		    // OH dist reading
+		int32_t num_readings = 10;
+
+		    struct dist_oh_t p_dist_oh[num_readings];
+			struct dist_oh_t new_reading;
+			int32_t i = 0;
+
+            // Getting the readings
+			while (i < num_readings)
+			{
+			    new_reading = read_distance_overhead();
+			    if (new_reading.dist_oh == -1 && new_reading.flag_black == false) {
+				    continue;
+			    }
+			    p_dist_oh[i] = new_reading;
+			    i++;
+			}
+
+            // Special method for checking if big black rock
+			int32_t flag_not_black_count = 0;
+			for (int j = num_readings-5; j < num_readings; j++) {
+				if (p_dist_oh[j].flag_black == false) {
+					flag_not_black_count++;
+				}
+			}
+
+            // Directly storing that this rock is a big black rock if true, else
+            // proceeding with normal method of taking the average overhead distance
+            // reading with bins
+			if (flag_not_black_count == 0 && rock_color == BLACK) {
+				rock_data.color = BLACK;
+				rock_data.size = 6;
+			} else {
+
+				float sum = 0.0f;
+				for (int32_t j = 0; j < num_readings; j++) {
+					sum += (float)p_dist_oh[j].dist_oh;
+				}
+
+				int32_t avg_dist_oh = (int32_t)(sum / (float)i);
+
+				printf("AVG Overhead dist: %4d mm\n", (int)avg_dist_oh);
+
+				// Classifying rock as 3x3x3 or 6x6x6 (based on overhead dist reading)
+				if (avg_dist_oh >= 68 && avg_dist_oh <= 72) { // Mountain
+					// "mountain"
+				} else if (avg_dist_oh >= 34) { // Small rock
+					rock_data.color = rock_color;
+					rock_data.size = 3;
+				} else { // Big rock
+					rock_data.color = rock_color;
+					rock_data.size = 6;
+				}
+			}
+
+            if (rock_data.size == -1) {
+                printf("Mountain\n");
+            } else {
+                print_rock_color(rock_data.color);
+                printf("Rock size: %d\n", rock_data.size);
+            }
+            }
+
+            else if (strcmp(MSG, "CF") == 0)
+            {
+            
+		          while (1) {
+                enum e_rock_color rock_color = identify_rock_color(&cal);
+                if (rock_color == ERROR) { printf("Color front: total error\n"); continue; }
+                
+                print_rock_color(rock_color);
+                
+                if(uart_has_data(UART0))
+                {
+                  read_uart_message(UART0, MSG);
+
+                  if(strcmp(MSG, "S") == 0)
+                  {
+                    send_orientation(&ori);
+                    break;
+                  }
+                }
+              }
+            }
+
+        // =========================
+        // SHUFFLE LEFT
+        // =========================
+        else if(strncmp(MSG, "SHL", 3) == 0)
+        {
+            int cycles = 5; // default
+            sscanf(MSG, "SHL,%d", &cycles);
+
+            shuffle_sideways(&ori, cycles, true);
+
+            print_orientation(&ori);
+            send_orientation(&ori);
+        }
+
+        // =========================
+        // SHUFFLE RIGHT
+        // =========================
+        else if(strncmp(MSG, "SHR", 3) == 0)
+        {
+            int cycles = 5; // default
+            sscanf(MSG, "SHR,%d", &cycles);
+
+            shuffle_sideways(&ori, cycles, false);
+
+            print_orientation(&ori);
+            send_orientation(&ori);
+        }
+
+	    // SEND FORWARD DISTANCE SENSOR READING
+            else if (strcmp(MSG, "SENDDIST") == 0)
+            {
+		    while (1) {
+		    send_dist();
+
+                    wait_motion(100);
+		    }
+            }
 
             else
             {
@@ -435,7 +637,3 @@ int main(void)
 
     return 0;
 }
-
-
-
-
