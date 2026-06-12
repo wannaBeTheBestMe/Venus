@@ -1,3 +1,4 @@
+#pragma once
 #include <libpynq.h>
 #include <stepper.h>
 #include <time.h>
@@ -72,6 +73,18 @@ typedef struct
     // 0 -> 89.999
 
 } orientation_t;
+
+
+enum e_rock_color {
+  ERROR,
+  NONE,
+  WHITE,
+  BLACK,
+  RED,
+  GREEN,
+  BLUE
+};
+
 
 static const char* ort_to_string(int ort)
 {
@@ -411,5 +424,149 @@ static int sweep_right_for_object(orientation_t *ori)
     }
 }
 
+static void heading_update(void)
+{
+	read_distance_forward();
+
+        int32_t dist = read_distance_forward();
+	for (int i = 0; i < 3; i++) {
+		if (dist > 0 && dist < 400) {
+			return;
+		} else {
+	  	dist = read_distance_forward();
+		    turn_degree();
+		}
+	}
+
+	// turn_degree_other_way();
+
+        sleep_msec(300);
+
+	for (int i = 0; i < 8; i++) {
+		if (dist > 0 && dist < 400) {
+			return;
+		} else {
+	  	dist = read_distance_forward();
+		    turn_degree_other_way();
+		}
+	}
+
+        sleep_msec(300);
+}
+
+static void turn_minute(void)
+{
+    stepper_set_speed(30000, 15000);
+    stepper_steps(10, 1);
+    sleep_msec(40);
+}
+
+static void sweep_minute(void)
+{
+    for(int i = 0; i < 4; i++)
+    {
+        turn_degree_other_way();
+    }
+
+    read_distance_forward();
+
+    while(1)
+    {
+        turn_minute();
+
+        int32_t dist = read_distance_forward();
+
+        printf("DIST = %d mm\n", (int)dist);
+
+        if(dist > 0 && dist < 400)
+        {
+            printf("OBJECT DETECTED\n");
+            return;
+        }
+
+        sleep_msec(300);
+    }
+}
+
+static void send_dist()
+{
+    char msg[64];
+    int32_t dist = read_distance_forward();
+
+    sprintf(msg, "SCAN,%d,", dist);
+
+    send_message(msg);
+
+    fprintf(stderr, "SENT DIST=%d\n", dist);
+}
 
 
+enum e_rock_color identify_rock_color(Cal* p_cal)
+{
+  enum e_rock_color rock_color;
+  
+   ColorReading color = read_color(p_cal);
+
+   if (!color.valid) { printf("Color front readings not valid.\n"); }
+
+//               printf("Lux=%7.1f  CAL R=%3d G=%3d B=%3d\n",
+//                      color.lux, color.r, color.g, color.b);
+          
+   float total = (float)(color.r + color.g + color.b);
+   if (total <= 0) { return ERROR; }
+   
+   float red_ratio = (float)color.r/total;
+   float green_ratio = (float)color.g/total;
+   float blue_ratio = (float)color.b/total;
+   
+   float rg_diff = (float)abs(color.r - color.g);
+   float rb_diff = (float)abs(color.r - color.b);
+   float gb_diff = (float)abs(color.g - color.b);
+   
+   bool diff_is_small = (rg_diff < 5) && (rb_diff < 5) && (gb_diff < 5);
+   
+   if (diff_is_small && color.r > 200) {
+    rock_color = WHITE;
+     return rock_color;
+   } else if (diff_is_small && color.r < 50) {
+    rock_color = BLACK;
+     return rock_color;
+   }
+   
+   if (red_ratio > green_ratio && red_ratio > blue_ratio) { rock_color = RED; return rock_color; }
+   else if (green_ratio > red_ratio && green_ratio > blue_ratio) { rock_color = GREEN; return rock_color; }
+   else if (blue_ratio > green_ratio && blue_ratio > red_ratio) { rock_color = BLUE; return rock_color; }
+   
+   rock_color = ERROR; // In case all color ratios are equalratios ar
+   return rock_color;   
+         
+   wait_motion(100);
+}
+
+void print_rock_color(enum e_rock_color rock_color) {
+    switch (rock_color)
+    {
+        case ERROR:
+            printf("ERROR\n");
+            break;
+        case NONE:
+            printf("NONE\n");
+            break;
+        case BLACK:
+            printf("BLACK\n");
+            break;
+        case WHITE:
+            printf("WHITE\n");
+            break;
+        case RED:
+            printf("RED\n");
+            break;
+        case GREEN:
+            printf("GREEN\n");
+            break;
+        case BLUE:
+            printf("BLUE\n");
+            break;
+        default: ;
+    }
+}
