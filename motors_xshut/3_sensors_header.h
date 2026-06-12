@@ -198,47 +198,12 @@ int32_t read_distance_forward(void)
     return dist;
 }
 
-// int32_t read_distance_overhead(void)
-// {
-//     uint8_t status = 0;
-//     int elapsed = 0;
-//     do {
-//         if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x14, &status, 1))
-//         {
-//             printf("  | Overhead dist: SENSOR DISCONNECTED\n");
-//             return -1;
-//         }
-//         elapsed++;
-//         if (elapsed >= 10000)
-//         {
-//             printf("  | Overhead dist: TIMEOUT\n");
-//             return -1;
-//         }
-//     } while ((status & 0x01) == 0);
-// 
-//     uint8_t data[2];
-//     if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x1E, data, 2))
-//     {
-//         printf("  | Overhead dist: SENSOR DISCONNECTED\n");
-//         return -1;
-//     }
-// 
-//     int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
-// 
-//     if (dist < 0 || dist > MAX_OVERHEAD_RANGE_MM)
-//     {
-//         printf("  | Overhead dist: OUT OF RANGE\n");
-//         return -1;
-//     }
-// 
-//     uint8_t clear = 0x01;
-//     iic_write_register(IIC0, SENSOR1_ADDRESS, 0x0B, &clear, 1);
-// 
-//     printf("  | Overhead dist: %4d mm\n", (int)dist);
-//     return dist;
-// }
+struct dist_oh_t {
+	int32_t dist_oh;
+	bool flag_black;
+};
 
-int32_t read_distance_overhead(void)
+int32_t read_distance_overhead_simple(void)
 {
     uint8_t trig = 0x01;
     if (iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &trig, 1))
@@ -269,6 +234,45 @@ int32_t read_distance_overhead(void)
 
     printf("  | Overhead dist: %4d mm\n", (int)dist);
     return dist;
+}
+
+struct dist_oh_t read_distance_overhead(void)
+{
+	struct dist_oh_t my_dist_oh;
+	my_dist_oh.dist_oh = -1;
+	my_dist_oh.flag_black = false;
+
+    uint8_t trig = 0x01;
+    if (iic_write_register(IIC0, SENSOR1_ADDRESS, 0x00, &trig, 1))
+    {
+        printf("  | Overhead dist: SENSOR DISCONNECTED\n");
+        return my_dist_oh;
+    }
+
+    sleep_msec(30);
+
+    uint8_t data[2];
+    if (iic_read_register(IIC0, SENSOR1_ADDRESS, 0x1E, data, 2))
+    {
+        printf("  | Overhead dist: SENSOR DISCONNECTED\n");
+        return my_dist_oh;
+    }
+
+    int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
+
+    if (dist < 0 || dist > MAX_OVERHEAD_RANGE_MM)
+    {
+        printf("  | Overhead dist, %d: OUT OF RANGE\n", dist);
+	my_dist_oh.flag_black = true;
+        return my_dist_oh;
+    }
+
+    uint8_t clear = 0x01;
+    iic_write_register(IIC0, SENSOR1_ADDRESS, 0x0B, &clear, 1);
+
+    // printf("  | Overhead dist: %4d mm\n", (int)dist);
+    my_dist_oh.dist_oh = dist;
+    return my_dist_oh;
 }
 
 void read_distance_sensors(void)
@@ -433,8 +437,8 @@ ColorReading read_color(const Cal *cal)
 
     if (result.valid == true)
     {
-       // printf("  | Lux=%7.1f  CAL R=%3d G=%3d B=%3d\n",
-       //    result.lux, result.r, result.g, result.b);
+        printf("  | Lux=%7.1f  CAL R=%3d G=%3d B=%3d\n",
+           result.lux, result.r, result.g, result.b);
     }
 
     return result;
