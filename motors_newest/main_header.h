@@ -26,6 +26,12 @@
 #define BLUE_MIN   25
 #define BLUE_MAX   70
 
+// Clear (unfiltered) channel: provisional seed only - the clear pulse range
+// differs from the filtered channels, so this MUST be set by CALBLACK for
+// reliable black detection. Values are a placeholder until calibrated.
+#define CLEAR_MIN  15
+#define CLEAR_MAX  120
+
 #define MAX_MSG_LEN 256
 
 #define TURN_90_STEPS   800
@@ -290,61 +296,61 @@ static long map_value(long x,
 }
 
 // ---- runtime TCS3200 black calibration (overrides defaults for this run) ----
-// Per channel (0=R,1=G,2=B): cal_min = white-reference pulse (->255),
-// cal_max = black-reference pulse (->0). Seeded from the compile-time defaults;
-// the CALBLACK command re-measures them. detect_black thresholds at cal_black_thresh.
-static long cal_min[3] = { RED_MIN,  GREEN_MIN, BLUE_MIN };
-static long cal_max[3] = { RED_MAX,  GREEN_MAX, BLUE_MAX };
+// Channels: 0=R, 1=G, 2=B, 3=CLEAR (unfiltered). cal_min = white-reference pulse
+// (->255), cal_max = black-reference pulse (->0). detect_black uses the CLEAR
+// channel only (best single luminance signal, 1 read instead of 3). RGB entries
+// are kept so CALBLACK can sample/log them for reference. Set by CALBLACK; must
+// be calibrated for the clear default to be reliable.
+#define CAL_CLEAR 3
+static long cal_min[4] = { RED_MIN,  GREEN_MIN, BLUE_MIN, CLEAR_MIN };
+static long cal_max[4] = { RED_MAX,  GREEN_MAX, BLUE_MAX, CLEAR_MAX };
 static int  cal_black_thresh = 150;
 
-// Read one filter channel's LOW-pulse width once. ch: 0=R,1=G,2=B.
+// Read one filter channel's LOW-pulse width once. ch: 0=R,1=G,2=B,3=CLEAR.
 static long read_channel_raw(int ch)
 {
     switch (ch)
     {
-        case 0: gpio_set_level(S2, GPIO_LEVEL_LOW);  gpio_set_level(S3, GPIO_LEVEL_LOW);  break;
-        case 1: gpio_set_level(S2, GPIO_LEVEL_HIGH); gpio_set_level(S3, GPIO_LEVEL_HIGH); break;
-        default: gpio_set_level(S2, GPIO_LEVEL_LOW); gpio_set_level(S3, GPIO_LEVEL_HIGH); break;
+        case 0: gpio_set_level(S2, GPIO_LEVEL_LOW);  gpio_set_level(S3, GPIO_LEVEL_LOW);  break; // R
+        case 1: gpio_set_level(S2, GPIO_LEVEL_HIGH); gpio_set_level(S3, GPIO_LEVEL_HIGH); break; // G
+        case 2: gpio_set_level(S2, GPIO_LEVEL_LOW);  gpio_set_level(S3, GPIO_LEVEL_HIGH); break; // B
+        default: gpio_set_level(S2, GPIO_LEVEL_HIGH); gpio_set_level(S3, GPIO_LEVEL_LOW); break; // CLEAR
     }
     long f = (long)pulseIn_LOW(SENSOR_OUT);
     delay_ms(10);
     return f;
 }
 
+// Black detection from the CLEAR channel only: black = clear intensity below the
+// threshold. One read -> the monitor thread polls ~3x faster than the old RGB path.
 static int detect_black(void)
 {
-    int v[3];
-    for (int ch = 0; ch < 3; ch++)
-    {
-        long freq = read_channel_raw(ch);
-        v[ch] = clamp255(map_value(freq, cal_min[ch], cal_max[ch], 255, 0));
-    }
+    long freq = read_channel_raw(CAL_CLEAR);
+    int  v = clamp255(map_value(freq, cal_min[CAL_CLEAR], cal_max[CAL_CLEAR], 255, 0));
 
-    printf("R=%d G=%d B=%d\n", v[0], v[1], v[2]);
+    printf("CLR=%d\n", v);
 
-    if (v[0] < cal_black_thresh && v[1] < cal_black_thresh && v[2] < cal_black_thresh) return 1;
-
-    return 0;
+    return (v < cal_black_thresh) ? 1 : 0;
 }
 
 // Average each channel's pulse width over dur_ms, dropping pulseIn timeouts (0).
 // out[ch] = average (or 0 if too few valid samples). Returns 1 if all channels OK.
-static int read_channel_refs(long out[3], int dur_ms)
+static int read_channel_refs(long out[4], int dur_ms)
 {
-    long sum[3] = {0, 0, 0};
-    int  cnt[3] = {0, 0, 0};
-    int  rounds = dur_ms / 30;          // ~30 ms per full R/G/B pass
+    long sum[4] = {0, 0, 0, 0};
+    int  cnt[4] = {0, 0, 0, 0};
+    int  rounds = dur_ms / 40;          // ~40 ms per full R/G/B/Clear pass
     if (rounds < 1) rounds = 1;
 
     for (int i = 0; i < rounds; i++)
-        for (int ch = 0; ch < 3; ch++)
+        for (int ch = 0; ch < 4; ch++)
         {
             long f = read_channel_raw(ch);
             if (f > 0) { sum[ch] += f; cnt[ch]++; }
         }
 
     int ok = 1;
-    for (int ch = 0; ch < 3; ch++)
+    for (int ch = 0; ch < 4; ch++)
     {
         if (cnt[ch] < 3) { out[ch] = 0; ok = 0; }
         else out[ch] = sum[ch] / cnt[ch];
