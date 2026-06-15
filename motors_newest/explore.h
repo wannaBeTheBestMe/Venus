@@ -190,6 +190,21 @@ static int sweep_collect(orientation_t *ori, exp_obj_t *objs, int maxn)
     return n;
 }
 
+// move_batch_until stop fns (poll the g_black flag set by the monitor thread,
+// NOT detect_black, to avoid GPIO contention with that thread).
+static int exp_stop_advance(void)            // cliff or a mountain within range
+{
+    if (g_black) return 1;
+    int32_t d = read_distance_forward();
+    return (d > 0 && d < EXP_MOUNTAIN_NEAR_MM);
+}
+static int exp_stop_approach(void)           // cliff or object within stop distance
+{
+    if (g_black) return 1;
+    int32_t d = read_distance_forward();
+    return (d >= 0 && d <= EXP_APPROACH_STOP_MM);
+}
+
 // ------------------------------------------------------
 // Approach the object the robot is currently facing, stopping ~50 mm away.
 // Re-pinpoints each move-unit with heading_update_tracked. *moved = units.
@@ -200,14 +215,18 @@ static int approach_object(orientation_t *ori, int *moved)
     while (1)
     {
         int chk = exp_check();
-        if (chk == 1) { *moved = count; return ADV_BLACK; }
-        if (chk == 2) { *moved = count; return ADV_STOP;  }
+        if (chk == 1) { stepper_halt(); *moved = count; return ADV_BLACK; }
+        if (chk == 2) { stepper_halt(); *moved = count; return ADV_STOP;  }
 
         int32_t dist = read_distance_forward();
         if (dist >= 0 && dist <= EXP_APPROACH_STOP_MM) { *moved = count; return ADV_DONE; }
 
-        move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW);
-        wait_motion(4000);
+        // halts mid-batch on cliff (g_black) or on reaching the object
+        if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_approach))
+        {
+            *moved = count;
+            return g_black ? ADV_BLACK : ADV_DONE;
+        }
         count++;
         heading_update_tracked(ori);
 
@@ -228,14 +247,18 @@ static int advance_monitored(orientation_t *ori, int mm, int *moved)
     for (; count < units; )
     {
         int chk = exp_check();
-        if (chk == 1) { *moved = count; return ADV_BLACK; }
-        if (chk == 2) { *moved = count; return ADV_STOP;  }
+        if (chk == 1) { stepper_halt(); *moved = count; return ADV_BLACK; }
+        if (chk == 2) { stepper_halt(); *moved = count; return ADV_STOP;  }
 
         int32_t d = read_distance_forward();
         if (d > 0 && d < EXP_MOUNTAIN_NEAR_MM) { *moved = count; return ADV_MOUNTAIN; }
 
-        move_forward(MOVE_UNIT, SPEED_SLOW);
-        wait_motion(800);
+        // halts mid-batch on cliff (g_black) or a mountain coming into range
+        if (move_batch_until(MOVE_UNIT, SPEED_SLOW, exp_stop_advance))
+        {
+            *moved = count;
+            return g_black ? ADV_BLACK : ADV_MOUNTAIN;
+        }
         count++;
     }
     *moved = count;
@@ -313,6 +336,9 @@ static const char *rock_color_str(enum e_rock_color c)
 // ------------------------------------------------------
 static void handle_black(orientation_t *ori)
 {
+    stepper_halt();                          // CANCEL any in-flight forward steps FIRST, else the
+                                             // reverse below is queued behind them and the robot
+                                             // rolls further onto the cliff before backing off.
     exp_mon_stop();                          // pause monitor while we clear the edge
     send_message("NOGO");                    // UI logs a 10x10 cm no-go box at current pose
     send_orientation(ori);
@@ -327,6 +353,7 @@ static void handle_black(orientation_t *ori)
 
 static void avoid_mountain(orientation_t *ori)
 {
+    stepper_halt();                          // cancel in-flight forward steps before reversing
     char m[48];
     snprintf(m, sizeof m, "MOUNTAIN,%d", 30);
     send_message(m);
