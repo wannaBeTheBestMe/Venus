@@ -37,6 +37,7 @@ int main(void)
 
     fprintf(stderr, "READY\n");
     send_message("LOG,READY");   // always wireless: key boot signal, independent of LOGON/LOGOFF
+    send_message("LOG,Run CALBLACK to calibrate the clear channel");
 
     char MSG[MAX_MSG_LEN];
 
@@ -759,35 +760,36 @@ int main(void)
         {
             exp_mon_stop();   // monitor thread shares S2/S3 + cal globals; must be off
 
-            long white[3], black[3];
+            long white[4], black[4];
 
             log_msg("CAL: place WHITE under the sensor (arena floor)");
             for (int s = 5; s >= 1; s--) { log_msg("CAL: sampling WHITE in %d...", s); sleep_msec(1000); }
-            int okw = read_channel_refs(white, 1500);
+            int okw = read_channel_refs(white, 2000);
 
             log_msg("CAL: now show BLACK (tape) - switching in 3s");
             for (int s = 3; s >= 1; s--) { log_msg("CAL: %d...", s); sleep_msec(1000); }
 
             log_msg("CAL: place BLACK under the sensor (tape)");
             for (int s = 5; s >= 1; s--) { log_msg("CAL: sampling BLACK in %d...", s); sleep_msec(1000); }
-            int okb = read_channel_refs(black, 1500);
+            int okb = read_channel_refs(black, 2000);
 
-            const long MIN_CONTRAST = 8;   // us; black pulse must clearly exceed white
-            int valid = okw && okb;
-            for (int ch = 0; ch < 3 && valid; ch++)
-                if (black[ch] <= white[ch] + MIN_CONTRAST) valid = 0;
+            const long MIN_CONTRAST = 8;   // us; black clear-pulse must clearly exceed white
+            // Black detection uses the CLEAR channel only -> validate that channel.
+            int valid = okw && okb &&
+                        (black[CAL_CLEAR] > white[CAL_CLEAR] + MIN_CONTRAST);
 
             if (!valid)
             {
-                log_msg("CALBLACK FAILED (low contrast / bad sample) - keeping old cal");
-                log_msg("CAL measured W[%ld,%ld,%ld] B[%ld,%ld,%ld]",
-                        white[0], white[1], white[2], black[0], black[1], black[2]);
+                log_msg("CALBLACK FAILED (low clear contrast / bad sample) - keeping old cal");
+                log_msg("CAL clear W=%ld B=%ld", white[CAL_CLEAR], black[CAL_CLEAR]);
             }
             else
             {
-                for (int ch = 0; ch < 3; ch++) { cal_min[ch] = white[ch]; cal_max[ch] = black[ch]; }
-                log_msg("CALBLACK DONE R[%ld,%ld] G[%ld,%ld] B[%ld,%ld]",
-                        cal_min[0], cal_max[0], cal_min[1], cal_max[1], cal_min[2], cal_max[2]);
+                cal_min[CAL_CLEAR] = white[CAL_CLEAR];
+                cal_max[CAL_CLEAR] = black[CAL_CLEAR];
+                log_msg("CALBLACK DONE CLEAR[%ld,%ld] (ref RGB W[%ld,%ld,%ld] B[%ld,%ld,%ld])",
+                        cal_min[CAL_CLEAR], cal_max[CAL_CLEAR],
+                        white[0], white[1], white[2], black[0], black[1], black[2]);
             }
         }
 
@@ -797,6 +799,7 @@ int main(void)
             cal_min[0] = RED_MIN;   cal_max[0] = RED_MAX;
             cal_min[1] = GREEN_MIN; cal_max[1] = GREEN_MAX;
             cal_min[2] = BLUE_MIN;  cal_max[2] = BLUE_MAX;
+            cal_min[CAL_CLEAR] = CLEAR_MIN; cal_max[CAL_CLEAR] = CLEAR_MAX;
             cal_black_thresh = 150;
             log_msg("CAL reset to defaults");
         }
