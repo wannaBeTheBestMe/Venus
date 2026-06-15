@@ -76,34 +76,19 @@ int main(void)
 
                 while(1)
                 {
-                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
-
+                    // one batch at a time (no queue-ahead); halts immediately on "S"
+                    int stopped = move_batch_until(MOVE_UNIT, SPEED_MEDIUM, stop_on_uart_S);
                     count++;
 
-                    wait_motion(100);
-
-                    if(uart_has_data(UART0))
+                    if (stopped)
                     {
-                        read_uart_message(UART0, MSG);
-
-                        log_msg("NEW MSG = %s", MSG);
-
-                        if(strcmp(MSG, "S") == 0)
-                        {
-                            char stp[64];
-
-                            sprintf(stp, "STEPS,%ld", count);
-
-                            send_message(stp);
-
-                            fprintf(stderr, "%s\n", stp);
-
-                            print_orientation(&ori);
-
-                            send_orientation(&ori);
-
-                            break;
-                        }
+                        char stp[64];
+                        sprintf(stp, "STEPS,%ld", count);
+                        send_message(stp);
+                        log_msg("NEW MSG = S");
+                        print_orientation(&ori);
+                        send_orientation(&ori);
+                        break;
                     }
                 }
             }
@@ -125,6 +110,7 @@ int main(void)
 
                      if(dist >= 0 && dist <= 50)
                      {
+                         stepper_halt();
                          // char stp[64];
                          // sprintf(stp, "STEPS,%ld", count);
                          // send_message(stp);
@@ -134,8 +120,13 @@ int main(void)
                          break;
                      }
 
-                     move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW);
-                     wait_motion(3000);
+                     // halts mid-batch the instant the obstacle comes within 50 mm
+                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_on_fwd_block))
+                     {
+                         print_orientation(&ori);
+                         send_orientation(&ori);
+                         break;
+                     }
                      count++;
 
                     if(uart_has_data(UART0))
@@ -144,18 +135,17 @@ int main(void)
 
 			if(strcmp(MSG, "S") == 0)
                         {
+                        stepper_halt();
                         char stp[64];
-                        
+
                         sprintf(stp, "STEPS,%ld", count);
-                        
+
                         send_message(stp);
-                        
-                        fprintf(stderr, "%s\n", stp);
-                        
+
                         print_orientation(&ori);
-                        
+
                         send_orientation(&ori);
-                        
+
                         break;
                         }
 
@@ -322,20 +312,17 @@ int main(void)
             {
                 while(1)
                 {
-                    move_forward(MOVE_UNIT, SPEED_MEDIUM);
-
-                    if (detect_black())
+                    // poll the sensor directly (no monitor thread for this command);
+                    // move_batch_until halts the instant black appears mid-batch.
+                    if (detect_black() ||
+                        move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, detect_black))
                     {
+                        stepper_halt();
                         log_msg("BLACK DETECTED");
-
                         print_orientation(&ori);
-
                         send_orientation(&ori);
-
                         break;
                     }
-
-                    wait_motion(100);
                 }
             }
 
@@ -472,17 +459,24 @@ int main(void)
 
                      if(dist >= 0 && dist <= 50)
                      {
+                         stepper_halt();
                          print_orientation(&ori);
                          send_orientation(&ori);
 
                         sprintf(stp, "STEPS,%ld", count);
                         send_message(stp);
-                        fprintf(stderr, "%s\n", stp);
                          break;
                      }
 
-                     move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW);
-                     wait_motion(4000);
+                     // halts mid-batch as soon as the object is within 50 mm (no overshoot/bump)
+                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_on_fwd_block))
+                     {
+                         print_orientation(&ori);
+                         send_orientation(&ori);
+                         sprintf(stp, "STEPS,%ld", count);
+                         send_message(stp);
+                         break;
+                     }
                      count++;
 
 		     heading_update();
@@ -494,12 +488,11 @@ int main(void)
 
                         if(strcmp(MSG, "S") == 0)
                         {
+                            stepper_halt();
                             send_orientation(&ori);
                             break;
                         }
                     }
-
-                    wait_motion(100);
 		 }
 
 

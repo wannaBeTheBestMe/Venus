@@ -368,6 +368,49 @@ static void move_forward(int steps, int speed)
     stepper_steps(steps, steps);
 }
 
+// Cancel any in-flight + queued stepper command immediately, then re-lock the
+// drivers for subsequent commands. stepper_steps is non-blocking and keeps a
+// current + one queued command, so a plain loop-break leaves steps running;
+// call this to actually stop now.
+static void stepper_halt(void)
+{
+    stepper_reset();    // discards the current and queued command (also disables drivers)
+    stepper_enable();   // re-enable so the next stepper_steps holds/moves
+}
+
+// Move one batch and poll to completion, halting the instant stop() returns
+// nonzero. Returns 1 if halted by the stop condition, 0 if the batch completed.
+// Polling each batch to done (instead of firing batches on a fixed timer)
+// prevents queueing a second batch ahead.
+static int move_batch_until(int steps, int speed, int (*stop)(void))
+{
+    stepper_set_speed(speed, speed);
+    stepper_steps(steps, steps);
+    while (!stepper_steps_done())
+    {
+        if (stop()) { stepper_halt(); return 1; }
+        sleep_msec(2);
+    }
+    return 0;
+}
+
+// stop() helpers for move_batch_until.
+static int stop_on_fwd_block(void)              // forward obstacle within 50 mm
+{
+    int32_t d = read_distance_forward();
+    return (d >= 0 && d <= 50);
+}
+static int stop_on_uart_S(void)                 // operator pressed stop
+{
+    if (uart_has_data(UART0))
+    {
+        char m[MAX_MSG_LEN];
+        read_uart_message(UART0, m);
+        if (strcmp(m, "S") == 0) return 1;
+    }
+    return 0;
+}
+
 static void turn_left_90(void)
 {
     move_forward(MOVE_UNIT, SPEED_TURN);
