@@ -289,34 +289,67 @@ static long map_value(long x,
            out_min;
 }
 
+// ---- runtime TCS3200 black calibration (overrides defaults for this run) ----
+// Per channel (0=R,1=G,2=B): cal_min = white-reference pulse (->255),
+// cal_max = black-reference pulse (->0). Seeded from the compile-time defaults;
+// the CALBLACK command re-measures them. detect_black thresholds at cal_black_thresh.
+static long cal_min[3] = { RED_MIN,  GREEN_MIN, BLUE_MIN };
+static long cal_max[3] = { RED_MAX,  GREEN_MAX, BLUE_MAX };
+static int  cal_black_thresh = 150;
+
+// Read one filter channel's LOW-pulse width once. ch: 0=R,1=G,2=B.
+static long read_channel_raw(int ch)
+{
+    switch (ch)
+    {
+        case 0: gpio_set_level(S2, GPIO_LEVEL_LOW);  gpio_set_level(S3, GPIO_LEVEL_LOW);  break;
+        case 1: gpio_set_level(S2, GPIO_LEVEL_HIGH); gpio_set_level(S3, GPIO_LEVEL_HIGH); break;
+        default: gpio_set_level(S2, GPIO_LEVEL_LOW); gpio_set_level(S3, GPIO_LEVEL_HIGH); break;
+    }
+    long f = (long)pulseIn_LOW(SENSOR_OUT);
+    delay_ms(10);
+    return f;
+}
+
 static int detect_black(void)
 {
-    long freq;
-    int r, g, b;
+    int v[3];
+    for (int ch = 0; ch < 3; ch++)
+    {
+        long freq = read_channel_raw(ch);
+        v[ch] = clamp255(map_value(freq, cal_min[ch], cal_max[ch], 255, 0));
+    }
 
-    gpio_set_level(S2, GPIO_LEVEL_LOW);
-    gpio_set_level(S3, GPIO_LEVEL_LOW);
-    freq = (long)pulseIn_LOW(SENSOR_OUT);
-    r = clamp255(map_value(freq, RED_MIN, RED_MAX, 255, 0));
-    delay_ms(10);
+    printf("R=%d G=%d B=%d\n", v[0], v[1], v[2]);
 
-    gpio_set_level(S2, GPIO_LEVEL_HIGH);
-    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-    freq = (long)pulseIn_LOW(SENSOR_OUT);
-    g = clamp255(map_value(freq, GREEN_MIN, GREEN_MAX, 255, 0));
-    delay_ms(10);
-
-    gpio_set_level(S2, GPIO_LEVEL_LOW);
-    gpio_set_level(S3, GPIO_LEVEL_HIGH);
-    freq = (long)pulseIn_LOW(SENSOR_OUT);
-    b = clamp255(map_value(freq, BLUE_MIN, BLUE_MAX, 255, 0));
-    delay_ms(10);
-
-    printf("R=%d G=%d B=%d\n", r, g, b);
-
-    if (r < 150 && g < 150 && b < 150) return 1;
+    if (v[0] < cal_black_thresh && v[1] < cal_black_thresh && v[2] < cal_black_thresh) return 1;
 
     return 0;
+}
+
+// Average each channel's pulse width over dur_ms, dropping pulseIn timeouts (0).
+// out[ch] = average (or 0 if too few valid samples). Returns 1 if all channels OK.
+static int read_channel_refs(long out[3], int dur_ms)
+{
+    long sum[3] = {0, 0, 0};
+    int  cnt[3] = {0, 0, 0};
+    int  rounds = dur_ms / 30;          // ~30 ms per full R/G/B pass
+    if (rounds < 1) rounds = 1;
+
+    for (int i = 0; i < rounds; i++)
+        for (int ch = 0; ch < 3; ch++)
+        {
+            long f = read_channel_raw(ch);
+            if (f > 0) { sum[ch] += f; cnt[ch]++; }
+        }
+
+    int ok = 1;
+    for (int ch = 0; ch < 3; ch++)
+    {
+        if (cnt[ch] < 3) { out[ch] = 0; ok = 0; }
+        else out[ch] = sum[ch] / cnt[ch];
+    }
+    return ok;
 }
 
 // ======================================================
