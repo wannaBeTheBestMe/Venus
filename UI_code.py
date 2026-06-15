@@ -316,6 +316,34 @@ class VenusDashboard(QMainWindow):
         self.scene.addLine(x - s/2, y + s/2, x + s/2, y - s/2, pen)
         self.findings_list.addItem(f"[HAZARD] CLIFF @ ({round(x/SCALE,1)}, {round(y/SCALE,1)})cm")
 
+    # ---------------- EXPLORE DRAW HELPERS ----------------
+    def _draw_explored_sector(self, cx, cy, heading_deg, radius_cm, span=180.0, steps=24):
+        # Filled semicircle (QPolygonF arc) centered on the robot heading. Uses the
+        # same (sin, -cos) convention as the SCAN handler so it matches the robot's
+        # real forward direction in this scene frame.
+        r = radius_cm * SCALE
+        pts = [QPointF(cx, cy)]
+        start = heading_deg - span / 2.0
+        for i in range(steps + 1):
+            a = math.radians(start + span * i / steps)
+            pts.append(QPointF(cx + r * math.sin(a), cy - r * math.cos(a)))
+        fill = QColor("#00FF66"); fill.setAlpha(26)
+        self.scene.addPolygon(QPolygonF(pts), QPen(QColor("#00FF66"), 1), QBrush(fill))
+
+    def _draw_nogo_box(self, cx, cy, size_cm=10):
+        h = (size_cm / 2.0) * SCALE
+        fill = QColor(RED_ALERT); fill.setAlpha(40)
+        self.scene.addRect(cx - h, cy - h, 2*h, 2*h,
+                           QPen(QColor(RED_ALERT), 1, Qt.PenStyle.DashLine), QBrush(fill))
+        self.findings_list.addItem(f"[NO-GO] cliff box @ ({round(cx/SCALE,1)}, {round(cy/SCALE,1)})cm")
+
+    def _draw_mountain(self, cx, cy, size_cm):
+        r = (size_cm / 2.0) * SCALE
+        self.scene.addEllipse(cx - r, cy - r, 2*r, 2*r,
+                              QPen(QColor(AMBER), 2, Qt.PenStyle.DashLine),
+                              QBrush(QColor(255, 171, 0, 40)))
+        self.findings_list.addItem(f"[MOUNTAIN] ~{int(size_cm)}cm @ ({round(cx/SCALE,1)}, {round(cy/SCALE,1)})cm")
+
     def _fit_segment_tls(self, pts):
         # Total least squares via SVD: principal axis of the centroid-subtracted
         # points. Minimizes PERPENDICULAR distance, so it's correct for any
@@ -654,6 +682,33 @@ class VenusDashboard(QMainWindow):
                 # Drop the rock exactly under the robot
                 self.scene.addItem(RockSample(real_x, real_y, sz, col, temp))
                 self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {temp}°C")
+
+            # --- EXPLORE: explored semicircle region ---
+            elif cmd == "REGION":
+                radius_cm = float(parts[1]) if len(parts) > 1 else 40.0
+                c = target.scenePos()
+                angle_deg = self.robot41_angle if is_41 else self.robot80_angle
+                self._draw_explored_sector(c.x(), c.y(), angle_deg, radius_cm)
+
+            # --- EXPLORE: mountain obstacle (placed ahead of the robot) ---
+            elif cmd == "MOUNTAIN":
+                size_cm = float(parts[1]) if len(parts) > 1 else 30.0
+                c = target.scenePos()
+                angle_deg = self.robot41_angle if is_41 else self.robot80_angle
+                a = math.radians(angle_deg)
+                fwd = 15.0 * SCALE
+                self._draw_mountain(c.x() + fwd * math.sin(a),
+                                    c.y() - fwd * math.cos(a), size_cm)
+
+            # --- EXPLORE: small-cliff no-go box at the robot ---
+            elif cmd == "NOGO":
+                c = target.scenePos()
+                self._draw_nogo_box(c.x(), c.y(), 10)
+
+            # --- EXPLORE: run finished ---
+            elif cmd == "EXPLORE_DONE":
+                self.log_widget.append(
+                    f"<span style='color:{CYAN};'>[EXPLORE] mapping run complete.</span>")
 
             # --- STATUS UPDATE ---
             if is_41:
