@@ -710,6 +710,10 @@ class VenusDashboard(QMainWindow):
                 self.log_widget.append(
                     f"<span style='color:{CYAN};'>[EXPLORE] mapping run complete.</span>")
 
+            # --- WIRELESS LOG line (already shown raw above; just don't parse as geometry) ---
+            elif cmd == "LOG":
+                pass
+
             # --- STATUS UPDATE ---
             if is_41:
                 self.status_41_label.setText(f"<span style='color: {CYAN};'>● ONLINE</span>")

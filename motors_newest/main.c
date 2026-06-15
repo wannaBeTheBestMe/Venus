@@ -36,6 +36,7 @@ int main(void)
     sleep_msec(3000);
 
     fprintf(stderr, "READY\n");
+    send_message("LOG,READY");   // always wireless: key boot signal, independent of LOGON/LOGOFF
 
     char MSG[MAX_MSG_LEN];
 
@@ -63,7 +64,7 @@ int main(void)
         {
             read_uart_message(UART0, MSG);
 
-            fprintf(stderr, "MSG = %s\n", MSG);
+            log_msg("MSG = %s", MSG);
 
             // =========================
             // FORWARD UNTIL STOP
@@ -84,7 +85,7 @@ int main(void)
                     {
                         read_uart_message(UART0, MSG);
 
-                        fprintf(stderr, "NEW MSG = %s\n", MSG);
+                        log_msg("NEW MSG = %s", MSG);
 
                         if(strcmp(MSG, "S") == 0)
                         {
@@ -181,8 +182,7 @@ int main(void)
 
                 if (sscanf(MSG, "MOVE,%d,%d", &x, &y) == 2)
                 {
-                    fprintf(stderr, "X = %d\n", x);
-                    fprintf(stderr, "Y = %d\n", y);
+                    log_msg("MOVE X=%d Y=%d", x, y);
 
                     if (x > 0)
                     {
@@ -248,7 +248,7 @@ int main(void)
                         wait_motion(2000);
                     }
 
-                    fprintf(stderr, "MOVE COMPLETE\n");
+                    log_msg("MOVE COMPLETE");
 
                     print_orientation(&ori);
 
@@ -325,7 +325,7 @@ int main(void)
 
                     if (detect_black())
                     {
-                        fprintf(stderr, "BLACK DETECTED\n");
+                        log_msg("BLACK DETECTED");
 
                         print_orientation(&ori);
 
@@ -547,7 +547,7 @@ int main(void)
 
 				int32_t avg_dist_oh = (int32_t)(sum / (float)i);
 
-				printf("AVG Overhead dist: %4d mm\n", (int)avg_dist_oh);
+				log_msg("AVG Overhead dist: %d mm", (int)avg_dist_oh);
 
 				// Classifying rock as 3x3x3 or 6x6x6 (based on overhead dist reading)
 				if (avg_dist_oh >= 68 && avg_dist_oh <= 72) { // Mountain
@@ -562,11 +562,11 @@ int main(void)
 			}
 
             if (rock_data.size == -1) {
-                printf("Mountain\n");
+                log_msg("Mountain");
                 send_message("MOUNTAIN,30");
             } else {
                 print_rock_color(rock_data.color);
-                printf("Rock size: %d\n", rock_data.size);
+                log_msg("Rock color=%s size=%d", rock_color_str(rock_data.color), (int)rock_data.size);
                 char fm[64];
                 sprintf(fm, "FOUND_ROCK,%d,%s,%.1f",
                         (int)rock_data.size, rock_color_str(rock_data.color), rock_data.temp);
@@ -742,9 +742,21 @@ int main(void)
             send_orientation(&ori);
         }
 
+        // ---- wireless logging toggle (testing tool; LOGOFF for the demo) ----
+        else if (strcmp(MSG, "LOGON") == 0)
+        {
+            g_log_wireless = 1;
+            send_message("LOG,wireless logging ON");
+        }
+        else if (strcmp(MSG, "LOGOFF") == 0)
+        {
+            send_message("LOG,wireless logging OFF");   // send confirmation before disabling
+            g_log_wireless = 0;
+        }
+
             else
             {
-                fprintf(stderr, "UNKNOWN COMMAND\n");
+                log_msg("UNKNOWN COMMAND: %s", MSG);
             }
 
             fflush(stderr);

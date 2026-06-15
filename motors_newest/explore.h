@@ -349,7 +349,7 @@ static void avoid_mountain(orientation_t *ori)
 // ------------------------------------------------------
 static void run_explore(orientation_t *ori, Cal *cal)
 {
-    fprintf(stderr, "EXPLORE: start\n");
+    log_msg("EXPLORE: start");
     g_stop = 0;
     exp_mon_start();
 
@@ -413,5 +413,5 @@ static void run_explore(orientation_t *ori, Cal *cal)
 
     exp_mon_stop();
     send_message("EXPLORE_DONE");
-    fprintf(stderr, "EXPLORE: done\n");
+    log_msg("EXPLORE: done");
 }

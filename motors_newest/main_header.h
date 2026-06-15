@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #define S0 IO_AR4
 #define S1 IO_AR5
@@ -53,6 +54,12 @@
 #define VL53_SYSRANGE      0x00
 #define VL53_DISTANCE_REG  0x1E
 #define VL53_CLEAR_INT     0x0B
+
+// ---- wireless logging (testing tool) ----
+// g_log_wireless toggled at runtime via LOGON/LOGOFF; default ON for testing.
+// Forward-declared here so sensor-fault logs in 3_sensors_header.h can use it.
+static int g_log_wireless = 1;
+static void log_msg(const char *fmt, ...);
 
 #include "3_sensors_header.h"
 
@@ -177,6 +184,28 @@ void send_message(char *msg)
     }
 
     fprintf(stderr, "Sent: %s\n", msg);
+}
+
+// Mirror a console log line to the laptop over MQTT (via send_message), gated by
+// the runtime g_log_wireless flag. Always also prints to the local console.
+// MAIN-THREAD ONLY: never call from the black-monitor pthread (concurrent UART
+// writes would corrupt the framed messages).
+static void log_msg(const char *fmt, ...)
+{
+    char buf[MAX_MSG_LEN];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+
+    fprintf(stderr, "%s\n", buf);
+
+    if (g_log_wireless)
+    {
+        char out[MAX_MSG_LEN + 8];
+        snprintf(out, sizeof out, "LOG,%s", buf);
+        send_message(out);
+    }
 }
 
 static void send_orientation(orientation_t *ori)
@@ -417,8 +446,7 @@ static int sweep_right_for_object(orientation_t *ori)
 
         if(dist > 0 && dist < 400)
         {
-            printf("OBJECT DETECTED\n");
-            printf("TARGET HEADING = %.2f\n", get_heading(ori));
+            log_msg("OBJECT DETECTED, dist=%d, heading=%.2f", (int)dist, get_heading(ori));
 	    turn_degree_other_way();
             return dist;
         }
@@ -433,7 +461,7 @@ static int sweep_right_for_object(orientation_t *ori)
         rotate_orientation(ori, -1.0f);
     }
 
-    printf("SWEEP COMPLETE — no object found\n");
+    log_msg("SWEEP COMPLETE - no object found");
     return -1;
 }
 
