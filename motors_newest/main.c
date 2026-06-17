@@ -35,9 +35,12 @@ int main(void)
 
     sleep_msec(3000);
 
+    int cal_loaded = cal_load();   // restore persisted CALBLACK calibration if present
+
     fprintf(stderr, "READY\n");
     send_message("LOG,READY");   // always wireless: key boot signal, independent of LOGON/LOGOFF
-    send_message("LOG,Run CALBLACK to calibrate the clear channel");
+    if (cal_loaded) send_message("LOG,Loaded saved clear calibration");
+    else            send_message("LOG,Run CALBLACK to calibrate the clear channel");
 
     char MSG[MAX_MSG_LEN];
 
@@ -783,6 +786,7 @@ int main(void)
                 log_msg("CALBLACK DONE CLEAR[%ld,%ld] (ref RGB W[%ld,%ld,%ld] B[%ld,%ld,%ld])",
                         cal_min[CAL_CLEAR], cal_max[CAL_CLEAR],
                         white[0], white[1], white[2], black[0], black[1], black[2]);
+                cal_save();   // persist across reboots
             }
         }
 
@@ -794,7 +798,8 @@ int main(void)
             cal_min[2] = BLUE_MIN;  cal_max[2] = BLUE_MAX;
             cal_min[CAL_CLEAR] = CLEAR_MIN; cal_max[CAL_CLEAR] = CLEAR_MAX;
             cal_black_thresh = 150;
-            log_msg("CAL reset to defaults");
+            cal_forget();   // delete the saved file so reboot uses defaults too
+            log_msg("CAL reset to defaults (saved calibration cleared)");
         }
 
             else

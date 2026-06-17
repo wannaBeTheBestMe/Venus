@@ -306,6 +306,45 @@ static long cal_min[4] = { RED_MIN,  GREEN_MIN, BLUE_MIN, CLEAR_MIN };
 static long cal_max[4] = { RED_MAX,  GREEN_MAX, BLUE_MAX, CLEAR_MAX };
 static int  cal_black_thresh = 150;
 
+// ---- persistent calibration (survives reboots) ----
+// CALBLACK writes the calibrated CLEAR channel here; loaded at boot. The
+// compile-time #defines remain the immutable "original" that CALRESET restores
+// (CALRESET also deletes this file so the next boot uses the defaults).
+#define CAL_FILE "/home/student/calblack.cfg"
+
+static void cal_save(void)
+{
+    FILE *f = fopen(CAL_FILE, "w");
+    if (!f) { log_msg("CAL save FAILED (cannot open %s)", CAL_FILE); return; }
+    fprintf(f, "%ld %ld %d\n", cal_min[CAL_CLEAR], cal_max[CAL_CLEAR], cal_black_thresh);
+    fclose(f);
+    log_msg("CAL saved to %s", CAL_FILE);
+}
+
+// Returns 1 if a valid saved calibration was loaded, else 0 (keeps defaults).
+static int cal_load(void)
+{
+    FILE *f = fopen(CAL_FILE, "r");
+    if (!f) return 0;
+    long mn = 0, mx = 0; int th = 0;
+    int n = fscanf(f, "%ld %ld %d", &mn, &mx, &th);
+    fclose(f);
+    if (n != 3 || mn <= 0 || mx <= 0 || mn >= mx)
+    {
+        log_msg("CAL file invalid - using defaults");
+        return 0;
+    }
+    cal_min[CAL_CLEAR] = mn;
+    cal_max[CAL_CLEAR] = mx;
+    cal_black_thresh   = th;
+    return 1;
+}
+
+static void cal_forget(void)
+{
+    remove(CAL_FILE);   // ignore failure (e.g. file absent)
+}
+
 // Read one filter channel's LOW-pulse width once. ch: 0=R,1=G,2=B,3=CLEAR.
 static long read_channel_raw(int ch)
 {
