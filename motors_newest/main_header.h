@@ -552,17 +552,7 @@ static int sweep_right_for_object(orientation_t *ori)
 {
     read_distance_forward();
 
-    // Pre-rotate 90 deg to one side so the 180 deg scan is symmetric about the start heading.
-    // turn_degree_other_way() is the exact inverse of the scan step, so physical direction and
-    // orientation bookkeeping stay self-consistent with the existing sweep.
-    for (int i = 0; i < 90; i++)
-    {
-        turn_degree_other_way();
-        rotate_orientation(ori, -1.0f);
-    }
-
-    // Scan 180 deg back across, checking the forward distance every degree.
-    for (int swept = 0; swept < 180; swept++)
+    while(1)
     {
         turn_degree();
 
@@ -576,23 +566,21 @@ static int sweep_right_for_object(orientation_t *ori)
 
         if(dist > 0 && dist < 400)
         {
-            log_msg("OBJECT DETECTED, dist=%d, heading=%.2f", (int)dist, get_heading(ori));
+            printf("OBJECT DETECTED\n");
+            printf("TARGET HEADING = %.2f\n", get_heading(ori));
 	    turn_degree_other_way();
+	    // turn_degree_other_way();
             return dist;
+        }
+
+        if(ori->theta >= 89.0f)
+        {
+            printf("SWEEP COMPLETE — no object found\n");
+            return -1;
         }
 
         sleep_msec(300);
     }
-
-    // No object across the full 180 deg: rotate 90 deg back to restore the original heading.
-    for (int i = 0; i < 90; i++)
-    {
-        turn_degree_other_way();
-        rotate_orientation(ori, -1.0f);
-    }
-
-    log_msg("SWEEP COMPLETE - no object found");
-    return -1;
 }
 
 static void heading_update(void)
