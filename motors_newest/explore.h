@@ -29,6 +29,8 @@
 #define EXP_MM_PER_UNIT       61      // ~MOVE_UNIT(500) * 0.0123 cm/step * 10
 #define EXP_MON_SLEEP_MS      20
 #define EXP_APPROACH_CAP      20      // max move-units before giving up an approach
+#define SWEEP_STEP_DEG        1.0f    // in-place rotation increment per sweep sample (finer = slower)
+#define SWEEP_SETTLE_MS       60      // settle after each step before sampling the forward sensor
 
 // advance_monitored / approach_object return codes
 #define ADV_DONE      0
@@ -117,49 +119,67 @@ static void exp_rotate_rel(orientation_t *ori, float rel)
 // (centroid relative heading + nearest distance). Returns object count, or
 // -2 (black) / -3 (operator stop). Leaves heading restored to the origin.
 // ------------------------------------------------------
+// Blocking IN-PLACE rotation by signed deg (+ = CW). Polls stepper_steps_done so no
+// steps are lost (unlike the non-blocking turn_degree), then settles before sampling.
+static void sweep_rotate(orientation_t *ori, float deg)
+{
+    int s = (int)(fabsf(deg) * (float)TURN_90_STEPS / 90.0f);
+    if (s < 1) s = 1;
+    stepper_set_speed(SPEED_SLOW, SPEED_SLOW);
+    if (deg >= 0) stepper_steps(-s, s);   // in-place CW
+    else          stepper_steps(s, -s);   // in-place CCW
+    while (!stepper_steps_done()) sleep_msec(2);
+    sleep_msec(SWEEP_SETTLE_MS);
+    rotate_orientation(ori, deg);
+}
+
 static int sweep_collect(orientation_t *ori, exp_obj_t *objs, int maxn)
 {
     read_distance_forward();
 
-    for (int i = 0; i < 90; i++) { turn_degree_other_way(); rotate_orientation(ori, -1.0f); }
+    int steps = (int)(180.0f / SWEEP_STEP_DEG);
 
-    int   n = 0, in_run = 0, run_cnt = 0, gap = 0;
-    float run_sum = 0.0f;
+    sweep_rotate(ori, -90.0f);            // go to one extreme (single blocking move)
+
+    int     n = 0, in_run = 0, run_cnt = 0, gap_steps = 0;
+    float   run_sum = 0.0f;
     int32_t run_min = 0;
+    int32_t closest = -1;                 // diagnostic: nearest in-range reading seen
 
-    for (int swept = 0; swept < 180; swept++)
+    for (int i = 0; i < steps; i++)
     {
         int chk = exp_check();
         if (chk == 1) return -2;
         if (chk == 2) return -3;
 
-        turn_degree();
-        rotate_orientation(ori, 1.0f);
+        sweep_rotate(ori, SWEEP_STEP_DEG);
 
-        float   rel = -90.0f + (float)(swept + 1);
+        float   rel = -90.0f + (float)(i + 1) * SWEEP_STEP_DEG;
         int32_t d   = read_distance_forward();
+        if (d > 0 && (closest < 0 || d < closest)) closest = d;
 
         if (d > 0 && d < EXP_SWEEP_RANGE_MM)
         {
             if (!in_run) { in_run = 1; run_sum = 0.0f; run_cnt = 0; run_min = d; }
-            run_sum += rel; run_cnt++; if (d < run_min) run_min = d; gap = 0;
+            run_sum += rel; run_cnt++; if (d < run_min) run_min = d; gap_steps = 0;
         }
         else if (in_run)
         {
-            gap++;
-            if (gap > EXP_CLUSTER_GAP_DEG)
+            gap_steps++;
+            if (gap_steps * SWEEP_STEP_DEG > (float)EXP_CLUSTER_GAP_DEG)
             {
                 if (n < maxn) { objs[n].rel_deg = run_sum / (float)run_cnt;
                                 objs[n].dist_mm = run_min; n++; }
                 in_run = 0;
             }
         }
-        sleep_msec(150);
     }
     if (in_run && n < maxn) { objs[n].rel_deg = run_sum / (float)run_cnt;
                               objs[n].dist_mm = run_min; n++; }
 
-    for (int i = 0; i < 90; i++) { turn_degree_other_way(); rotate_orientation(ori, -1.0f); }
+    sweep_rotate(ori, -90.0f);            // restore to the original (center) heading
+
+    log_msg("SWEEP: %d obj, closest=%d mm", n, (int)closest);
     return n;
 }
 

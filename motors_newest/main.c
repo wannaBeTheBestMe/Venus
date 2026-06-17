@@ -672,8 +672,18 @@ int main(void)
         // ---- test sub-command: queueing sweep, report object list ----
         else if (strcmp(MSG, "SWEEPQ") == 0)
         {
+            // isolate the diagnostic sweep from the global cliff monitor: an in-place
+            // rotation doesn't translate toward a cliff, so don't let g_black abort it.
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+            g_black = 0;
+
             exp_obj_t objs[EXP_MAX_OBJ];
             int n = sweep_collect(&ori, objs, EXP_MAX_OBJ);
+
+            if (n == -2)      log_msg("SWEEP ABORTED on black");
+            else if (n == -3) log_msg("SWEEP ABORTED on S");
+
             char m[64];
             sprintf(m, "OBJN,%d", (n < 0) ? 0 : n);
             send_message(m);
@@ -684,6 +694,8 @@ int main(void)
                 fprintf(stderr, "OBJ rel=%.1f dist=%d\n", objs[k].rel_deg, (int)objs[k].dist_mm);
             }
             send_orientation(&ori);
+
+            if (mon_was_on) exp_mon_start();
         }
 
         // ---- test sub-command: loop reading downward black sensor ----

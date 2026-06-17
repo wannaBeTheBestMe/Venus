@@ -367,7 +367,7 @@ static int detect_black(void)
     long freq = read_channel_raw(CAL_CLEAR);
     int  v = clamp255(map_value(freq, cal_min[CAL_CLEAR], cal_max[CAL_CLEAR], 255, 0));
 
-    printf("CLR=%d\n", v);
+    // printf("CLR=%d\n", v);   // silenced: the always-on monitor calls this continuously
 
     return (v < cal_black_thresh) ? 1 : 0;
 }
