@@ -22,7 +22,9 @@
 #define EXP_REGION_RADIUS_CM  40      // explored semicircle radius drawn in UI
 #define EXP_ADVANCE_MM        300     // forward hop when a sweep finds nothing
 #define EXP_APPROACH_STOP_MM  40      // coarse stop distance (phase 1) when approaching an object
-#define EXP_APPROACH_FINAL_MM 25      // fine stop distance (phase 2) to park overhead over the rock
+#define EXP_APPROACH_FINAL_MM 15      // fine stop distance (phase 2); forward sensor reliable to ~here
+#define EXP_FINAL_NUDGE_MM    5       // extra open-loop forward nudge after the 15 mm creep
+#define EXP_FINAL_NUDGE_STEPS ((EXP_FINAL_NUDGE_MM * MOVE_UNIT) / EXP_MM_PER_UNIT)  // ~40 steps (~5 mm)
 #define EXP_APPROACH_STEP     200     // phase-1 step between heading updates (was a full MOVE_UNIT;
                                       // smaller = re-aim more often, ~matches the old 4 s cadence)
 #define EXP_FINE_STEP         120     // small batch for the slow final creep
@@ -234,6 +236,7 @@ static int exp_stop_final(void)              // cliff or object within fine stop
     int32_t d = read_distance_forward();
     return (d >= 0 && d <= EXP_APPROACH_FINAL_MM);
 }
+static int stop_on_gblack(void) { return g_black; }   // cliff-only (for the open-loop final nudge)
 
 // Global cliff-stop helpers for manual forward commands (poll the monitor's flag).
 static int stop_black_or_S(void) { return g_black || stop_on_uart_S(); }
@@ -274,6 +277,7 @@ static int approach_object(orientation_t *ori, int *moved)
     // --- Phase 2: fine creep at SPEED_ULTRA_ULTRA_SLOW until <= EXP_APPROACH_FINAL_MM ---
     // No heading_update here: the object is close and centred; the slower speed lets
     // move_batch_until halt within ~1 mm of the target so the overhead lands over the rock.
+    int arrived = 0;
     for (int fine = 0; fine < EXP_FINE_CAP; fine++)
     {
         int chk = exp_check();
@@ -281,16 +285,28 @@ static int approach_object(orientation_t *ori, int *moved)
         if (chk == 2) { stepper_halt(); *moved = count; return ADV_STOP;  }
 
         int32_t dist = read_distance_forward();
-        if (dist >= 0 && dist <= EXP_APPROACH_FINAL_MM) { *moved = count; return ADV_DONE; }
+        if (dist >= 0 && dist <= EXP_APPROACH_FINAL_MM) { arrived = 1; break; }
 
         if (move_batch_until(EXP_FINE_STEP, SPEED_ULTRA_ULTRA_SLOW, exp_stop_final))
         {
+            if (g_black) { *moved = count; return ADV_BLACK; }
+            arrived = 1; break;          // halted at the fine stop distance
+        }
+    }
+
+    // Manual open-loop nudge: forward ~EXP_FINAL_NUDGE_MM in steps so the overhead lands over the
+    // rock (the forward sensor is unreliable below ~15 mm, so we dead-reckon the last bit).
+    // Only when we actually confirmed the 15 mm stop; halts early only on a cliff.
+    if (arrived)
+    {
+        if (move_batch_until(EXP_FINAL_NUDGE_STEPS, SPEED_ULTRA_ULTRA_SLOW, stop_on_gblack))
+        {
             *moved = count;
-            return g_black ? ADV_BLACK : ADV_DONE;
+            return ADV_BLACK;            // cliff appeared during the nudge
         }
     }
     *moved = count;
-    return ADV_DONE;   // creep cap reached (e.g. sensor went -1 at very close range)
+    return ADV_DONE;
 }
 
 // ------------------------------------------------------

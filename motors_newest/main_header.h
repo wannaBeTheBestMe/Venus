@@ -44,7 +44,7 @@
 #define SPEED_TURN      4000
 
 #define SPEED_ULTRA_SLOW 36000
-#define SPEED_ULTRA_ULTRA_SLOW 60000   // larger = slower (uint16_t max 65535); fine final creep
+#define SPEED_ULTRA_ULTRA_SLOW 65535   // slowest possible (uint16_t max); fine final creep
 
 #define PCA9548A_ADDR 0x70
 #define SENSOR_ADDR   0x29

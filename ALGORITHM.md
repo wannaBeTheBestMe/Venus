@@ -68,8 +68,8 @@ on the fast `SPEED_FAST` moves).
    semicircle explored (`REGION`).
 2. **If objects found**, for each: rotate to its bearing → **approach** in two phases (monitored;
    `heading_update` silently re-aims at the object without disturbing tracked heading): coarse to
-   **40 mm** at `SPEED_ULTRA_SLOW`, then a fine creep to **25 mm** at `SPEED_ULTRA_ULTRA_SLOW` so
-   the **overhead sensor parks over the rock** → 
+   **40 mm** at `SPEED_ULTRA_SLOW`, then a fine creep to **15 mm** at `SPEED_ULTRA_ULTRA_SLOW`
+   (slowest), then a fixed open-loop **~5 mm** nudge so the **overhead sensor parks over the rock** → 
    **classify** (front color + overhead size). **Rock** → send `FOUND_ROCK,size,color`. **Mountain**
    → run avoidance. Then **return to the scan origin** (reverse dead-reckoning) and continue.
 3. **If none**, drive **forward ~300 mm** (monitored) and loop.
@@ -95,7 +95,7 @@ neighbors. The detector (`sweep_collect`):
   resolution, not a bug).
 
 ## 8. Object classification (`classify_object`)
-Approach to ~25 mm (two-phase, overhead over the rock), then: front color sensor → color; overhead sensor (10 readings) → size.
+Approach two-phase to ~15 mm at the slowest speed, then a fixed open-loop ~5 mm nudge (forward sensor is unreliable below ~15 mm), parking the overhead over the rock. Then: front color sensor → color; overhead sensor (10 readings) → size.
 All forward approaches share one function, `approach_object` (`EXP1`, `EXPLORE`, `O`, and `FB`), so the coarse-then-fine creep, cap, and cliff/stop handling are identical everywhere.
 Hardened against bad sensor data: overhead sampling is **bounded** (`EXP_OH_MAX_ATTEMPTS`) so a
 stuck/disconnected sensor can't hang; **out-of-range readings are excluded from the distance
