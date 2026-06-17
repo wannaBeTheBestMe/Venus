@@ -96,6 +96,7 @@ neighbors. The detector (`sweep_collect`):
 
 ## 8. Object classification (`classify_object`)
 Approach to ~25 mm (two-phase, overhead over the rock), then: front color sensor → color; overhead sensor (10 readings) → size.
+All forward approaches share one function, `approach_object` (`EXP1`, `EXPLORE`, `O`, and `FB`), so the coarse-then-fine creep, cap, and cliff/stop handling are identical everywhere.
 Hardened against bad sensor data: overhead sampling is **bounded** (`EXP_OH_MAX_ATTEMPTS`) so a
 stuck/disconnected sensor can't hang; **out-of-range readings are excluded from the distance
 average** (counted only via the "tall / no-top" rule); returns an error rather than guessing if too

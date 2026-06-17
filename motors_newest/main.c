@@ -128,71 +128,12 @@ int main(void)
             // =========================
              else if(strcmp(MSG, "FB") == 0)
              {
-		 // turn_degree_other_way();
-
-		 read_distance_forward();
-
-                 long count = 0;
-
-                 while(1)
-                 {
-                     int32_t dist = read_distance_forward();
-
-                     if(dist >= 0 && dist <= 50)
-                     {
-                         stepper_halt();
-                         // char stp[64];
-                         // sprintf(stp, "STEPS,%ld", count);
-                         // send_message(stp);
-                         // fprintf(stderr, "%s\n", stp);
-                         print_orientation(&ori);
-                         send_orientation(&ori);
-                         break;
-                     }
-
-                     // halts mid-batch on a cliff (g_black) or obstacle within 50 mm
-                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_approach))
-                     {
-                         if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
-                         print_orientation(&ori);
-                         send_orientation(&ori);
-                         break;
-                     }
-                     count++;
-
-                    if(uart_has_data(UART0))
-                    {
-                        read_uart_message(UART0, MSG);
-
-			if(strcmp(MSG, "S") == 0)
-                        {
-                        stepper_halt();
-                        char stp[64];
-
-                        sprintf(stp, "STEPS,%ld", count);
-
-                        send_message(stp);
-
-                        print_orientation(&ori);
-
-                        send_orientation(&ori);
-
-                        break;
-                        }
-
-
-                        // if(strcmp(MSG, "S") == 0)
-                        // {
-                        //     send_orientation(&ori);
-
-                        //     char stp[64];
-                        //     sprintf(stp, "STEPS,%ld", count);
-			// 	send_message(stp);
-                        //     break;
-                        // }
-                    }
-
-                 }
+                int moved = 0;
+                int r = approach_object(&ori, &moved);
+                if (r == ADV_BLACK) { log_msg("FB: aborted - black/cliff"); g_black_ack(); }
+                { char stp[64]; sprintf(stp, "STEPS,%d", moved); send_message(stp); }
+                print_orientation(&ori);
+                send_orientation(&ori);
              }
 
             // =========================
@@ -483,64 +424,18 @@ int main(void)
 			continue;
 		}
 
-		// Moves forward (but only one move unit)
-		read_distance_forward();
-
-                 long count = 0;
-                 int32_t dist = read_distance_forward();
-
-		char stp[64];
-
-		 while (1)
-		 {
-		 dist = read_distance_forward();
-
-                     if(dist >= 0 && dist <= 50)
-                     {
-                         stepper_halt();
-                         print_orientation(&ori);
-                         send_orientation(&ori);
-
-                        sprintf(stp, "STEPS,%ld", count);
-                        send_message(stp);
-                         break;
-                     }
-
-                     // halts mid-batch on a cliff (g_black) or as the object reaches 50 mm
-                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_approach))
-                     {
-                         if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
-                         print_orientation(&ori);
-                         send_orientation(&ori);
-                         sprintf(stp, "STEPS,%ld", count);
-                         send_message(stp);
-                         break;
-                     }
-                     count++;
-
-                     if (count >= EXP_APPROACH_CAP)   // cap: don't drive forever on persistent -1
-                     {
-                         stepper_halt();
-                         print_orientation(&ori);
-                         send_orientation(&ori);
-                         break;
-                     }
-
-		     heading_update();
-
-
-                    if(uart_has_data(UART0))
-                    {
-                        read_uart_message(UART0, MSG);
-
-                        if(strcmp(MSG, "S") == 0)
-                        {
-                            stepper_halt();
-                            send_orientation(&ori);
-                            break;
-                        }
-                    }
-		 }
+                // Approach the object (two-phase: coarse 40 mm -> fine creep to 25 mm)
+                int moved = 0;
+                int r = approach_object(&ori, &moved);
+                if (r != ADV_DONE)
+                {
+                    if (r == ADV_BLACK) { log_msg("O: aborted - black/cliff"); g_black_ack(); }
+                    else if (r == ADV_STOP) log_msg("O: aborted - stop");
+                    send_orientation(&ori);
+                    continue;
+                }
+                { char stp[64]; sprintf(stp, "STEPS,%d", moved); send_message(stp); }
+                send_orientation(&ori);
 
 
                 // Classify the object directly ahead (front color + overhead),
