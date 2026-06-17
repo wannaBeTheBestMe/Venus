@@ -113,33 +113,6 @@ static void exp_rotate_rel(orientation_t *ori, float rel)
 }
 
 // ------------------------------------------------------
-// Tracked heading_update: like main_header.h's heading_update() but updates
-// ori on every micro-rotation (the original leaves ori desynced).
-// ------------------------------------------------------
-static void heading_update_tracked(orientation_t *ori)
-{
-    read_distance_forward();
-    int32_t dist = read_distance_forward();
-
-    for (int i = 0; i < 3; i++)
-    {
-        if (dist > 0 && dist < 400) return;
-        dist = read_distance_forward();
-        turn_degree();
-        rotate_orientation(ori, 1.0f);
-    }
-    sleep_msec(200);
-    for (int i = 0; i < 8; i++)
-    {
-        if (dist > 0 && dist < 400) return;
-        dist = read_distance_forward();
-        turn_degree_other_way();
-        rotate_orientation(ori, -1.0f);
-    }
-    sleep_msec(200);
-}
-
-// ------------------------------------------------------
 // Queueing 180-deg sweep. Clusters contiguous in-range readings into objects
 // (centroid relative heading + nearest distance). Returns object count, or
 // -2 (black) / -3 (operator stop). Leaves heading restored to the origin.
@@ -211,10 +184,11 @@ static void g_black_ack(void) { g_black = 0; }   // re-arm after handling a blac
 
 // ------------------------------------------------------
 // Approach the object the robot is currently facing, stopping ~50 mm away.
-// Re-pinpoints each move-unit with heading_update_tracked. *moved = units.
+// Re-pinpoints each move-unit with the silent heading_update(). *moved = units.
 // ------------------------------------------------------
 static int approach_object(orientation_t *ori, int *moved)
 {
+    (void)ori;   // heading_update() is a silent physical drift-correction; ori unchanged
     int count = 0;
     while (1)
     {
@@ -232,7 +206,7 @@ static int approach_object(orientation_t *ori, int *moved)
             return g_black ? ADV_BLACK : ADV_DONE;
         }
         count++;
-        heading_update_tracked(ori);
+        heading_update();   // silent drift-correction (re-aims at the object; leaves ori intact)
 
         if (count >= EXP_APPROACH_CAP) { *moved = count; return ADV_DONE; }
     }

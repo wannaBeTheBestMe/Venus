@@ -713,8 +713,9 @@ int main(void)
         // ---- test sub-command: tracked heading update ----
         else if (strcmp(MSG, "HU2") == 0)
         {
+            log_msg("HU2: ori before/after should MATCH (silent drift-correction)");
             print_orientation(&ori);
-            heading_update_tracked(&ori);
+            heading_update();      // silent: re-aims at the object, leaves ori unchanged
             print_orientation(&ori);
             send_orientation(&ori);
         }
