@@ -66,8 +66,10 @@ on the fast `SPEED_FAST` moves).
    current heading, in fine increments; the forward sensor profiles the surroundings and the robot
    extracts **discrete objects** (bearing-relative-to-center + distance). Mark the scanned
    semicircle explored (`REGION`).
-2. **If objects found**, for each: rotate to its bearing → **approach** to ~50 mm (monitored;
-   `heading_update` silently re-aims at the object without disturbing tracked heading) →
+2. **If objects found**, for each: rotate to its bearing → **approach** in two phases (monitored;
+   `heading_update` silently re-aims at the object without disturbing tracked heading): coarse to
+   **40 mm** at `SPEED_ULTRA_SLOW`, then a fine creep to **25 mm** at `SPEED_ULTRA_ULTRA_SLOW` so
+   the **overhead sensor parks over the rock** → 
    **classify** (front color + overhead size). **Rock** → send `FOUND_ROCK,size,color`. **Mountain**
    → run avoidance. Then **return to the scan origin** (reverse dead-reckoning) and continue.
 3. **If none**, drive **forward ~300 mm** (monitored) and loop.
@@ -93,7 +95,7 @@ neighbors. The detector (`sweep_collect`):
   resolution, not a bug).
 
 ## 8. Object classification (`classify_object`)
-Approach to ~50 mm, then: front color sensor → color; overhead sensor (10 readings) → size.
+Approach to ~25 mm (two-phase, overhead over the rock), then: front color sensor → color; overhead sensor (10 readings) → size.
 Hardened against bad sensor data: overhead sampling is **bounded** (`EXP_OH_MAX_ATTEMPTS`) so a
 stuck/disconnected sensor can't hang; **out-of-range readings are excluded from the distance
 average** (counted only via the "tall / no-top" rule); returns an error rather than guessing if too

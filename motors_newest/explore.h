@@ -21,7 +21,10 @@
 #define EXP_SWEEP_RANGE_MM    400     // forward detection range during a sweep
 #define EXP_REGION_RADIUS_CM  40      // explored semicircle radius drawn in UI
 #define EXP_ADVANCE_MM        300     // forward hop when a sweep finds nothing
-#define EXP_APPROACH_STOP_MM  50      // stop distance when approaching an object
+#define EXP_APPROACH_STOP_MM  40      // coarse stop distance (phase 1) when approaching an object
+#define EXP_APPROACH_FINAL_MM 25      // fine stop distance (phase 2) to park overhead over the rock
+#define EXP_FINE_STEP         120     // small batch for the slow final creep
+#define EXP_FINE_CAP          12      // max fine-creep batches (bounds overrun if sensor goes -1)
 #define EXP_MOUNTAIN_NEAR_MM  120     // forward proximity that trips obstacle avoidance
 #define EXP_NOGO_SIZE_CM      10      // assumed small-cliff bounding box
 #define EXP_MAX_OBJ           12      // max objects queued per sweep
@@ -217,11 +220,17 @@ static int exp_stop_advance(void)            // cliff or a mountain within range
     int32_t d = read_distance_forward();
     return (d > 0 && d < EXP_MOUNTAIN_NEAR_MM);
 }
-static int exp_stop_approach(void)           // cliff or object within stop distance
+static int exp_stop_approach(void)           // cliff or object within coarse stop distance
 {
     if (g_black) return 1;
     int32_t d = read_distance_forward();
     return (d >= 0 && d <= EXP_APPROACH_STOP_MM);
+}
+static int exp_stop_final(void)              // cliff or object within fine stop distance
+{
+    if (g_black) return 1;
+    int32_t d = read_distance_forward();
+    return (d >= 0 && d <= EXP_APPROACH_FINAL_MM);
 }
 
 // Global cliff-stop helpers for manual forward commands (poll the monitor's flag).
@@ -236,6 +245,8 @@ static int approach_object(orientation_t *ori, int *moved)
 {
     (void)ori;   // heading_update() is a silent physical drift-correction; ori unchanged
     int count = 0;
+
+    // --- Phase 1: coarse approach at SPEED_ULTRA_SLOW until <= EXP_APPROACH_STOP_MM ---
     while (1)
     {
         int chk = exp_check();
@@ -243,19 +254,40 @@ static int approach_object(orientation_t *ori, int *moved)
         if (chk == 2) { stepper_halt(); *moved = count; return ADV_STOP;  }
 
         int32_t dist = read_distance_forward();
-        if (dist >= 0 && dist <= EXP_APPROACH_STOP_MM) { *moved = count; return ADV_DONE; }
+        if (dist >= 0 && dist <= EXP_APPROACH_STOP_MM) break;   // reached coarse stop -> phase 2
 
-        // halts mid-batch on cliff (g_black) or on reaching the object
+        // halts mid-batch on cliff (g_black) or on reaching the coarse stop
         if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_approach))
         {
-            *moved = count;
-            return g_black ? ADV_BLACK : ADV_DONE;
+            if (g_black) { *moved = count; return ADV_BLACK; }
+            break;          // reached coarse stop mid-batch -> phase 2
         }
         count++;
         heading_update();   // silent drift-correction (re-aims at the object; leaves ori intact)
 
         if (count >= EXP_APPROACH_CAP) { *moved = count; return ADV_DONE; }
     }
+
+    // --- Phase 2: fine creep at SPEED_ULTRA_ULTRA_SLOW until <= EXP_APPROACH_FINAL_MM ---
+    // No heading_update here: the object is close and centred; the slower speed lets
+    // move_batch_until halt within ~1 mm of the target so the overhead lands over the rock.
+    for (int fine = 0; fine < EXP_FINE_CAP; fine++)
+    {
+        int chk = exp_check();
+        if (chk == 1) { stepper_halt(); *moved = count; return ADV_BLACK; }
+        if (chk == 2) { stepper_halt(); *moved = count; return ADV_STOP;  }
+
+        int32_t dist = read_distance_forward();
+        if (dist >= 0 && dist <= EXP_APPROACH_FINAL_MM) { *moved = count; return ADV_DONE; }
+
+        if (move_batch_until(EXP_FINE_STEP, SPEED_ULTRA_ULTRA_SLOW, exp_stop_final))
+        {
+            *moved = count;
+            return g_black ? ADV_BLACK : ADV_DONE;
+        }
+    }
+    *moved = count;
+    return ADV_DONE;   // creep cap reached (e.g. sensor went -1 at very close range)
 }
 
 // ------------------------------------------------------
