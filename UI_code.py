@@ -301,6 +301,7 @@ class VenusDashboard(QMainWindow):
         self.corner_angles = []         # measured corner angles (deg) from SEARCH
         self.cliffs = []                # hazard points (x,y)
         self.pending_pt = None          # provisional crossing awaiting confirm
+        self.sweep_items = []           # QGraphics items of the latest SWEEPQ (cleared each sweep)
 
     # ---------------- BMAP DRAW HELPERS ----------------
     def _draw_dot(self, x, y, color, faint=False):
@@ -343,6 +344,36 @@ class VenusDashboard(QMainWindow):
                               QPen(QColor(AMBER), 2, Qt.PenStyle.DashLine),
                               QBrush(QColor(255, 171, 0, 40)))
         self.findings_list.addItem(f"[MOUNTAIN] ~{int(size_cm)}cm @ ({round(cx/SCALE,1)}, {round(cy/SCALE,1)})cm")
+
+    # ---------------- SWEEPQ OBJECT MARKERS ----------------
+    def _clear_sweep(self):
+        for it in self.sweep_items:
+            try:
+                self.scene.removeItem(it)
+            except Exception:
+                pass
+        self.sweep_items = []
+
+    def _draw_sweep_object(self, cx, cy, robot_center, dist_cm, angle_deg):
+        OBJ_GREEN = "#39FF14"
+        # faint line from the robot to the object (direction)
+        line = self.scene.addLine(robot_center.x(), robot_center.y(), cx, cy,
+                                   QPen(QColor(57, 255, 20, 90), 1))
+        self.sweep_items.append(line)
+        # object marker
+        d = 2.2 * SCALE
+        dot = self.scene.addEllipse(cx - d/2, cy - d/2, d, d,
+                                    QPen(QColor("#FFFFFF"), 1), QBrush(QColor(OBJ_GREEN)))
+        dot.setToolTip(f"Object\nDist: {round(dist_cm,1)} cm\nBearing: {round(angle_deg,1)}°")
+        self.sweep_items.append(dot)
+        # distance label
+        label = self.scene.addText(f"{round(dist_cm,1)} cm")
+        label.setDefaultTextColor(QColor(OBJ_GREEN))
+        f = QFont(); f.setPointSizeF(7.0); label.setFont(f)
+        label.setPos(cx + d/2, cy - d)
+        self.sweep_items.append(label)
+        self.findings_list.addItem(
+            f"[SWEEP] obj @ {round(angle_deg,1)}°, {round(dist_cm,1)}cm")
 
     def _fit_segment_tls(self, pts):
         # Total least squares via SVD: principal axis of the centroid-subtracted
@@ -709,6 +740,25 @@ class VenusDashboard(QMainWindow):
             elif cmd == "EXPLORE_DONE":
                 self.log_widget.append(
                     f"<span style='color:{CYAN};'>[EXPLORE] mapping run complete.</span>")
+
+            # --- SWEEPQ: start of a new object list -> clear the previous sweep markers ---
+            elif cmd == "OBJN":
+                self._clear_sweep()
+                n = int(parts[1]) if len(parts) > 1 else 0
+                self.log_widget.append(
+                    f"<span style='color:#39FF14;'>[SWEEP] {n} object(s)</span>")
+
+            # --- SWEEPQ: one detected object at (rel bearing, distance) ---
+            elif cmd == "OBJ":
+                rel = float(parts[1])
+                dist_mm = float(parts[2])
+                c = target.sceneBoundingRect().center()
+                angle_deg = (self.robot41_angle if is_41 else self.robot80_angle) + rel
+                angle_rad = math.radians(angle_deg)
+                total_cm = dist_mm / 10.0 + SENSOR_OFFSET_CM
+                ox = c.x() + total_cm * SCALE * math.sin(angle_rad)
+                oy = c.y() - total_cm * SCALE * math.cos(angle_rad)
+                self._draw_sweep_object(ox, oy, c, total_cm, angle_deg)
 
             # --- WIRELESS LOG line (already shown raw above; just don't parse as geometry) ---
             elif cmd == "LOG":
