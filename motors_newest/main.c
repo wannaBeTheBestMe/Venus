@@ -151,7 +151,7 @@ int main(void)
 
                     if (x > 0)
                     {
-                        mv_stop = move_batch_until(x * MOVE_UNIT, SPEED_FAST, stop_black_or_S);
+                        mv_stop = move_batch_until(x * MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
                         if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     }
 
@@ -169,7 +169,7 @@ int main(void)
 
                         send_orientation(&ori);
 
-                        mv_stop = move_batch_until((-x) * MOVE_UNIT, SPEED_FAST, stop_black_or_S);
+                        mv_stop = move_batch_until((-x) * MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
                         if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     }
 
@@ -206,7 +206,7 @@ int main(void)
 
                     if (!mv_stop && y != 0)
                     {
-                        mv_stop = move_batch_until(y * MOVE_UNIT, SPEED_FAST, stop_black_or_S);
+                        mv_stop = move_batch_until(y * MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
                         if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     }
 
@@ -241,7 +241,7 @@ int main(void)
             // =========================
             else if(strcmp(MSG, "R") == 0)
             {
-                if (move_batch_until(MOVE_UNIT, SPEED_TURN, stop_black_or_S))
+                if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S))
                 {
                     if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     send_orientation(&ori);
@@ -262,7 +262,7 @@ int main(void)
             // =========================
             else if(strcmp(MSG, "L") == 0)
             {
-                if (move_batch_until(MOVE_UNIT, SPEED_TURN, stop_black_or_S))
+                if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S))
                 {
                     if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     send_orientation(&ori);
@@ -626,7 +626,7 @@ int main(void)
             int n = 3;
             sscanf(MSG, "RET,%d", &n);
             float oh = get_heading(&ori);
-            for (int i = 0; i < n; i++) { move_forward(MOVE_UNIT, SPEED_SLOW); wait_motion(800); }
+            for (int i = 0; i < n; i++) { move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW); wait_motion(800); }
             return_to_origin(&ori, oh, n);
             print_orientation(&ori);
             send_orientation(&ori);

@@ -103,10 +103,10 @@ static void exp_rotate_deg(orientation_t *ori, float deg)
 {
     int s = (int)(fabsf(deg) * (float)TURN_90_STEPS / 90.0f);
     if (s <= 0) return;
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
     if (deg >= 0) stepper_steps(-s, s);   // CW
     else          stepper_steps(s, -s);   // CCW
-    wait_motion(900);
+    wait_steps_done();
     rotate_orientation(ori, deg);
 }
 
@@ -310,7 +310,7 @@ static int advance_monitored(orientation_t *ori, int mm, int *moved)
         if (d > 0 && d < EXP_MOUNTAIN_NEAR_MM) { *moved = count; return ADV_MOUNTAIN; }
 
         // halts mid-batch on cliff (g_black) or a mountain coming into range
-        if (move_batch_until(MOVE_UNIT, SPEED_SLOW, exp_stop_advance))
+        if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_advance))
         {
             *moved = count;
             return g_black ? ADV_BLACK : ADV_MOUNTAIN;
@@ -327,12 +327,12 @@ static int advance_monitored(orientation_t *ori, int mm, int *moved)
 // ------------------------------------------------------
 static void return_to_origin(orientation_t *ori, float origin_heading, int units)
 {
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
     stepper_steps(TURN_180_STEPS, -TURN_180_STEPS);
-    wait_motion(1200);
+    wait_steps_done();
     rotate_orientation(ori, 180.0f);
 
-    for (int i = 0; i < units; i++) { move_forward(MOVE_UNIT, SPEED_SLOW); wait_motion(800); }
+    for (int i = 0; i < units; i++) { move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW); }   // move_forward now blocks
 
     float d = origin_heading - get_heading(ori);
     while (d > 180.0f)  d -= 360.0f;
@@ -413,7 +413,7 @@ static void handle_black(orientation_t *ori)
     send_message("NOGO");                    // UI logs a 10x10 cm no-go box at current pose
     send_orientation(ori);
 
-    move_forward(-2 * MOVE_UNIT, SPEED_SLOW);  // back straight off (known-safe direction)
+    move_forward(-2 * MOVE_UNIT, SPEED_ULTRA_SLOW);  // back straight off (known-safe direction)
     wait_motion(1500);
     exp_rotate_deg(ori, 90.0f);              // turn toward the interior; never circle the far side
 
@@ -429,7 +429,7 @@ static void avoid_mountain(orientation_t *ori)
     send_message(m);
     send_orientation(ori);
 
-    move_forward(-MOVE_UNIT, SPEED_SLOW);    // back up a little
+    move_forward(-MOVE_UNIT, SPEED_ULTRA_SLOW);    // back up a little
     wait_motion(600);
 
     for (int tries = 0; tries < 8; tries++)

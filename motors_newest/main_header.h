@@ -246,6 +246,15 @@ static void wait_motion(int ms)
     sleep_msec(ms);
 }
 
+// Block until the current stepper command finishes, then a short caster settle.
+// Speed-independent: needed now that moves/turns run at SPEED_ULTRA_SLOW (the old
+// fixed wait_motion delays were sized for the faster speeds and would be too short).
+static void wait_steps_done(void)
+{
+    while (!stepper_steps_done()) sleep_msec(2);
+    sleep_msec(120);
+}
+
 // ======================================================
 // COLOR SENSOR (TCS frequency-based)
 // ======================================================
@@ -406,6 +415,7 @@ static void move_forward(int steps, int speed)
 {
     stepper_set_speed(speed, speed);
     stepper_steps(steps, steps);
+    wait_steps_done();   // block to completion (one-shot callers; tight loops use move_batch_until)
 }
 
 // Cancel any in-flight + queued stepper command immediately, then re-lock the
@@ -448,21 +458,24 @@ static int stop_on_uart_S(void)                 // operator pressed stop
 
 static void turn_left_90(void)
 {
-    move_forward(MOVE_UNIT, SPEED_TURN);
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
     stepper_steps(TURN_90_STEPS, -TURN_90_STEPS);
+    wait_steps_done();
 }
 
 static void turn_right_90(void)
 {
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
     stepper_steps(-TURN_90_STEPS, TURN_90_STEPS);
+    wait_steps_done();
 }
 
 static void turn_180(void)
 {
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
     stepper_steps(TURN_180_STEPS, -TURN_180_STEPS);
+    wait_steps_done();
 }
 
 // ======================================================
