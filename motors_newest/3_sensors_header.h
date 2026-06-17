@@ -198,6 +198,29 @@ int32_t read_distance_forward(void)
     return dist;
 }
 
+// Raw forward distance: same read + range check, but NO delta-rejection and no
+// last_valid state. Used by the object sweep, where the distance legitimately jumps
+// as the beam pans across objects at different ranges (the sweep does its own
+// persistence/segmentation filtering instead). Returns mm, or -1 if invalid/out of range.
+int32_t read_distance_forward_raw(void)
+{
+    uint8_t trig = 0x01;
+    if (iic_write_register(IIC0, SENSOR2_ADDRESS, 0x00, &trig, 1)) return -1;
+
+    sleep_msec(30);
+
+    uint8_t data[2];
+    if (iic_read_register(IIC0, SENSOR2_ADDRESS, 0x1E, data, 2)) return -1;
+
+    int32_t dist = (int32_t)((data[0] << 8) | data[1]) + CALIBRATION_OFFSET_MM;
+
+    uint8_t clear = 0x01;
+    iic_write_register(IIC0, SENSOR2_ADDRESS, 0x0B, &clear, 1);
+
+    if (dist < 0 || dist > MAX_RANGE_MM) return -1;
+    return dist;
+}
+
 struct dist_oh_t {
 	int32_t dist_oh;
 	bool flag_black;

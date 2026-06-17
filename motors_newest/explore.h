@@ -29,8 +29,12 @@
 #define EXP_MM_PER_UNIT       61      // ~MOVE_UNIT(500) * 0.0123 cm/step * 10
 #define EXP_MON_SLEEP_MS      20
 #define EXP_APPROACH_CAP      20      // max move-units before giving up an approach
-#define SWEEP_STEP_DEG        1.0f    // in-place rotation increment per sweep sample (finer = slower)
+#define SWEEP_STEP_DEG        0.5f    // in-place rotation increment per sweep sample (finer = slower)
 #define SWEEP_SETTLE_MS       60      // settle after each step before sampling the forward sensor
+#define SWEEP_NEAR_TOL_MM     70      // readings within this of the object's mean = same rock
+#define SWEEP_MIN_OBJ_STEPS   4       // an object must persist this many steps to count (noise filter)
+#define SWEEP_GAP_STEPS       4       // out-of-range steps that close an object
+#define SWEEP_SEG_CONFIRM     3       // sustained off-band steps that split into a new distance level
 
 // advance_monitored / approach_object return codes
 #define ADV_DONE      0
@@ -125,7 +129,7 @@ static void sweep_rotate(orientation_t *ori, float deg)
 {
     int s = (int)(fabsf(deg) * (float)TURN_90_STEPS / 90.0f);
     if (s < 1) s = 1;
-    stepper_set_speed(SPEED_SLOW, SPEED_SLOW);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);   // slow + smooth for fine sampling
     if (deg >= 0) stepper_steps(-s, s);   // in-place CW
     else          stepper_steps(s, -s);   // in-place CCW
     while (!stepper_steps_done()) sleep_msec(2);
@@ -135,15 +139,17 @@ static void sweep_rotate(orientation_t *ori, float deg)
 
 static int sweep_collect(orientation_t *ori, exp_obj_t *objs, int maxn)
 {
-    read_distance_forward();
+    read_distance_forward_raw();
 
     int steps = (int)(180.0f / SWEEP_STEP_DEG);
 
     sweep_rotate(ori, -90.0f);            // go to one extreme (single blocking move)
 
-    int     n = 0, in_run = 0, run_cnt = 0, gap_steps = 0;
-    float   run_sum = 0.0f;
-    int32_t run_min = 0;
+    int     n = 0;
+    int     in_obj = 0, obj_cnt = 0, off = 0, gap = 0;
+    long    obj_sum_dist = 0;             // running sum for the object's mean distance
+    int32_t obj_min = 0;
+    float   obj_min_rel = 0.0f;           // bearing at the nearest reading (= object bearing)
     int32_t closest = -1;                 // diagnostic: nearest in-range reading seen
 
     for (int i = 0; i < steps; i++)
@@ -155,27 +161,45 @@ static int sweep_collect(orientation_t *ori, exp_obj_t *objs, int maxn)
         sweep_rotate(ori, SWEEP_STEP_DEG);
 
         float   rel = -90.0f + (float)(i + 1) * SWEEP_STEP_DEG;
-        int32_t d   = read_distance_forward();
+        int32_t d   = read_distance_forward_raw();   // no delta-reject; we filter by persistence
         if (d > 0 && (closest < 0 || d < closest)) closest = d;
 
-        if (d > 0 && d < EXP_SWEEP_RANGE_MM)
+        int in_range = (d > 0 && d < EXP_SWEEP_RANGE_MM);
+
+        if (in_range)
         {
-            if (!in_run) { in_run = 1; run_sum = 0.0f; run_cnt = 0; run_min = d; }
-            run_sum += rel; run_cnt++; if (d < run_min) run_min = d; gap_steps = 0;
-        }
-        else if (in_run)
-        {
-            gap_steps++;
-            if (gap_steps * SWEEP_STEP_DEG > (float)EXP_CLUSTER_GAP_DEG)
+            gap = 0;
+            if (!in_obj)
             {
-                if (n < maxn) { objs[n].rel_deg = run_sum / (float)run_cnt;
-                                objs[n].dist_mm = run_min; n++; }
-                in_run = 0;
+                in_obj = 1; obj_cnt = 1; obj_sum_dist = d; obj_min = d; obj_min_rel = rel; off = 0;
+            }
+            else
+            {
+                int32_t ref = (int32_t)(obj_sum_dist / obj_cnt);
+                if (labs((long)d - (long)ref) <= SWEEP_NEAR_TOL_MM)
+                {
+                    obj_cnt++; obj_sum_dist += d;
+                    if (d < obj_min) { obj_min = d; obj_min_rel = rel; }
+                    off = 0;
+                }
+                else if (++off >= SWEEP_SEG_CONFIRM)
+                {
+                    // sustained new distance level -> close this rock, start the next
+                    if (obj_cnt >= SWEEP_MIN_OBJ_STEPS && n < maxn)
+                    { objs[n].rel_deg = obj_min_rel; objs[n].dist_mm = obj_min; n++; }
+                    in_obj = 1; obj_cnt = 1; obj_sum_dist = d; obj_min = d; obj_min_rel = rel; off = 0;
+                }
             }
         }
+        else if (in_obj && ++gap >= SWEEP_GAP_STEPS)
+        {
+            if (obj_cnt >= SWEEP_MIN_OBJ_STEPS && n < maxn)
+            { objs[n].rel_deg = obj_min_rel; objs[n].dist_mm = obj_min; n++; }
+            in_obj = 0; off = 0;
+        }
     }
-    if (in_run && n < maxn) { objs[n].rel_deg = run_sum / (float)run_cnt;
-                              objs[n].dist_mm = run_min; n++; }
+    if (in_obj && obj_cnt >= SWEEP_MIN_OBJ_STEPS && n < maxn)
+    { objs[n].rel_deg = obj_min_rel; objs[n].dist_mm = obj_min; n++; }
 
     sweep_rotate(ori, -90.0f);            // restore to the original (center) heading
 
