@@ -656,11 +656,21 @@ int main(void)
         // ---- test sub-command: read the thermistor (rock temperature) ----
         else if (strcmp(MSG, "TEMP") == 0)
         {
-            float t = read_temperature();
-            char m[48];
-            sprintf(m, "TEMP,%.1f", t);
-            send_message(m);
-            log_msg("TEMP %.1f C", t);
+            while (1)
+            {
+                float t = read_temperature();
+                char m[48];
+                sprintf(m, "TEMP,%.1f", t);
+                send_message(m);
+                log_msg("TEMP %.1f C", t);
+
+                if (uart_has_data(UART0))
+                {
+                    read_uart_message(UART0, MSG);
+                    if (strcmp(MSG, "S") == 0) break;
+                }
+                wait_motion(500);
+            }
         }
 
         // ---- wireless logging toggle (testing tool; LOGOFF for the demo) ----
