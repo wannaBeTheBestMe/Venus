@@ -205,6 +205,10 @@ static int exp_stop_approach(void)           // cliff or object within stop dist
     return (d >= 0 && d <= EXP_APPROACH_STOP_MM);
 }
 
+// Global cliff-stop helpers for manual forward commands (poll the monitor's flag).
+static int stop_black_or_S(void) { return g_black || stop_on_uart_S(); }
+static void g_black_ack(void) { g_black = 0; }   // re-arm after handling a black halt
+
 // ------------------------------------------------------
 // Approach the object the robot is currently facing, stopping ~50 mm away.
 // Re-pinpoints each move-unit with heading_update_tracked. *moved = units.
@@ -438,7 +442,7 @@ static void run_explore(orientation_t *ori, Cal *cal)
         }
     }
 
-    exp_mon_stop();
+    // leave the monitor running: it is the global cliff-stop, active outside EXPLORE too
     send_message("EXPLORE_DONE");
     log_msg("EXPLORE: done");
 }
