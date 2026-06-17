@@ -107,7 +107,7 @@ static void exp_rotate_deg(orientation_t *ori, float deg)
 {
     int s = (int)(fabsf(deg) * (float)TURN_90_STEPS / 90.0f);
     if (s <= 0) return;
-    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
+    stepper_set_speed(SPEED_TURN, SPEED_TURN);   // TURN_90_STEPS calibrated at SPEED_TURN (see turn_180)
     if (deg >= 0) stepper_steps(-s, s);   // CW
     else          stepper_steps(s, -s);   // CCW
     wait_steps_done();

@@ -456,24 +456,28 @@ static int stop_on_uart_S(void)                 // operator pressed stop
     return 0;
 }
 
+// NOTE: TURN_90_STEPS/TURN_180_STEPS are calibrated at SPEED_TURN (fast), where wheel
+// slip absorbs part of each turn. Running these step counts slower removes the slip and
+// OVER-rotates (~216 deg for "180"), so in-place turns must stay at SPEED_TURN. Forward
+// translation is the part kept slow.
 static void turn_left_90(void)
 {
     move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW);
-    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
+    stepper_set_speed(SPEED_TURN, SPEED_TURN);
     stepper_steps(TURN_90_STEPS, -TURN_90_STEPS);
     wait_steps_done();
 }
 
 static void turn_right_90(void)
 {
-    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
+    stepper_set_speed(SPEED_TURN, SPEED_TURN);
     stepper_steps(-TURN_90_STEPS, TURN_90_STEPS);
     wait_steps_done();
 }
 
 static void turn_180(void)
 {
-    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
+    stepper_set_speed(SPEED_TURN, SPEED_TURN);
     stepper_steps(TURN_180_STEPS, -TURN_180_STEPS);
     wait_steps_done();
 }
