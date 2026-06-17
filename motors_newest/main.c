@@ -39,8 +39,18 @@ int main(void)
 
     fprintf(stderr, "READY\n");
     send_message("LOG,READY");   // always wireless: key boot signal, independent of LOGON/LOGOFF
-    if (cal_loaded) send_message("LOG,Loaded saved clear calibration");
-    else            send_message("LOG,Run CALBLACK to calibrate the clear channel");
+    if (cal_loaded)
+    {
+        send_message("LOG,Loaded saved clear calibration");
+        exp_mon_start();                       // global cliff-stop active (calibrated)
+        send_message("LOG,cliff monitor ACTIVE");
+    }
+    else
+    {
+        // do NOT auto-start: an uncalibrated monitor could read the floor as black
+        // and block all forward motion. CALBLACK will calibrate and start it.
+        send_message("LOG,Run CALBLACK - cliff monitor INACTIVE until calibrated");
+    }
 
     char MSG[MAX_MSG_LEN];
 
@@ -79,12 +89,20 @@ int main(void)
 
                 while(1)
                 {
-                    // one batch at a time (no queue-ahead); halts immediately on "S"
-                    int stopped = move_batch_until(MOVE_UNIT, SPEED_MEDIUM, stop_on_uart_S);
+                    // one batch at a time (no queue-ahead); halts on cliff (g_black) or "S"
+                    int stopped = move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
                     count++;
 
                     if (stopped)
                     {
+                        if (g_black)
+                        {
+                            log_msg("BLACK DETECTED");
+                            print_orientation(&ori);
+                            send_orientation(&ori);
+                            g_black_ack();
+                            break;
+                        }
                         char stp[64];
                         sprintf(stp, "STEPS,%ld", count);
                         send_message(stp);
@@ -123,9 +141,10 @@ int main(void)
                          break;
                      }
 
-                     // halts mid-batch the instant the obstacle comes within 50 mm
-                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_on_fwd_block))
+                     // halts mid-batch on a cliff (g_black) or obstacle within 50 mm
+                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_approach))
                      {
+                         if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                          print_orientation(&ori);
                          send_orientation(&ori);
                          break;
@@ -178,11 +197,12 @@ int main(void)
                 {
                     log_msg("MOVE X=%d Y=%d", x, y);
 
+                    int mv_stop = 0;   // set if a cliff (g_black) or S aborts a forward leg
+
                     if (x > 0)
                     {
-                        move_forward(x * MOVE_UNIT, SPEED_FAST);
-
-                        wait_motion(2000);
+                        mv_stop = move_batch_until(x * MOVE_UNIT, SPEED_FAST, stop_black_or_S);
+                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     }
 
                     if (x < 0)
@@ -199,12 +219,11 @@ int main(void)
 
                         send_orientation(&ori);
 
-                        move_forward((-x) * MOVE_UNIT, SPEED_FAST);
-
-                        wait_motion(2000);
+                        mv_stop = move_batch_until((-x) * MOVE_UNIT, SPEED_FAST, stop_black_or_S);
+                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     }
 
-                    if (y > 0)
+                    if (!mv_stop && y > 0)
                     {
                         turn_right_90();
 
@@ -218,7 +237,7 @@ int main(void)
 
                         send_orientation(&ori);
                     }
-                    else if (y < 0)
+                    else if (!mv_stop && y < 0)
                     {
                         turn_left_90();
 
@@ -235,11 +254,10 @@ int main(void)
                         send_orientation(&ori);
                     }
 
-                    if (y != 0)
+                    if (!mv_stop && y != 0)
                     {
-                        move_forward(y * MOVE_UNIT, SPEED_FAST);
-
-                        wait_motion(2000);
+                        mv_stop = move_batch_until(y * MOVE_UNIT, SPEED_FAST, stop_black_or_S);
+                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                     }
 
                     log_msg("MOVE COMPLETE");
@@ -273,19 +291,20 @@ int main(void)
             // =========================
             else if(strcmp(MSG, "R") == 0)
             {
-                move_forward(MOVE_UNIT, SPEED_TURN);
-
-                turn_right_90();
-
-                wait_motion(100);
-
-                rotate_orientation(&ori, 90.0f);
-
-                ori.theta = 0.0f;
-
-                print_orientation(&ori);
-
-                send_orientation(&ori);
+                if (move_batch_until(MOVE_UNIT, SPEED_TURN, stop_black_or_S))
+                {
+                    if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
+                    send_orientation(&ori);
+                }
+                else
+                {
+                    turn_right_90();
+                    wait_motion(100);
+                    rotate_orientation(&ori, 90.0f);
+                    ori.theta = 0.0f;
+                    print_orientation(&ori);
+                    send_orientation(&ori);
+                }
             }
 
             // =========================
@@ -293,19 +312,20 @@ int main(void)
             // =========================
             else if(strcmp(MSG, "L") == 0)
             {
-                move_forward(MOVE_UNIT, SPEED_TURN);
-
-                turn_left_90();
-
-                wait_motion(100);
-
-                rotate_orientation(&ori, -90.0f);
-
-                ori.theta = 0.0f;
-
-                print_orientation(&ori);
-
-                send_orientation(&ori);
+                if (move_batch_until(MOVE_UNIT, SPEED_TURN, stop_black_or_S))
+                {
+                    if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
+                    send_orientation(&ori);
+                }
+                else
+                {
+                    turn_left_90();
+                    wait_motion(100);
+                    rotate_orientation(&ori, -90.0f);
+                    ori.theta = 0.0f;
+                    print_orientation(&ori);
+                    send_orientation(&ori);
+                }
             }
 
             // =========================
@@ -313,9 +333,13 @@ int main(void)
             // =========================
             else if (strcmp(MSG, "STOPBLACK") == 0)
             {
+                // take exclusive TCS3200 access (this reads the sensor directly);
+                // restore the global monitor to its prior state afterward.
+                int mon_was_on = g_mon_run;
+                exp_mon_stop();
+
                 while(1)
                 {
-                    // poll the sensor directly (no monitor thread for this command);
                     // move_batch_until halts the instant black appears mid-batch.
                     if (detect_black() ||
                         move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, detect_black))
@@ -327,6 +351,8 @@ int main(void)
                         break;
                     }
                 }
+
+                if (mon_was_on) exp_mon_start();
             }
 
             // =========================
@@ -471,9 +497,10 @@ int main(void)
                          break;
                      }
 
-                     // halts mid-batch as soon as the object is within 50 mm (no overshoot/bump)
-                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_on_fwd_block))
+                     // halts mid-batch on a cliff (g_black) or as the object reaches 50 mm
+                     if(move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_approach))
                      {
+                         if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
                          print_orientation(&ori);
                          send_orientation(&ori);
                          sprintf(stp, "STEPS,%ld", count);
@@ -662,6 +689,8 @@ int main(void)
         // ---- test sub-command: loop reading downward black sensor ----
         else if (strcmp(MSG, "CLIFFCHK") == 0)
         {
+            int mon_was_on = g_mon_run;   // this reads the TCS3200 directly
+            exp_mon_stop();
             while (1)
             {
                 int b = detect_black();
@@ -674,6 +703,7 @@ int main(void)
                 }
                 wait_motion(200);
             }
+            if (mon_was_on) exp_mon_start();
         }
 
         // ---- test sub-commands: start/stop the black-monitor thread ----
@@ -754,6 +784,7 @@ int main(void)
         // ---- dynamic TCS3200 black calibration (white + black references) ----
         else if (strcmp(MSG, "CALBLACK") == 0)
         {
+            int mon_was_on = g_mon_run;
             exp_mon_stop();   // monitor thread shares S2/S3 + cal globals; must be off
 
             long white[4], black[4];
@@ -788,6 +819,10 @@ int main(void)
                         white[0], white[1], white[2], black[0], black[1], black[2]);
                 cal_save();   // persist across reboots
             }
+
+            // resume the global cliff monitor: after a successful calibration it is
+            // safe to run; on failure, only restore it if it was already on.
+            if (valid || mon_was_on) { exp_mon_start(); send_message("LOG,cliff monitor ACTIVE"); }
         }
 
         // ---- restore the compile-time default calibration ----

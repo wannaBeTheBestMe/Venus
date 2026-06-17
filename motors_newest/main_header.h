@@ -434,11 +434,6 @@ static int move_batch_until(int steps, int speed, int (*stop)(void))
 }
 
 // stop() helpers for move_batch_until.
-static int stop_on_fwd_block(void)              // forward obstacle within 50 mm
-{
-    int32_t d = read_distance_forward();
-    return (d >= 0 && d <= 50);
-}
 static int stop_on_uart_S(void)                 // operator pressed stop
 {
     if (uart_has_data(UART0))
