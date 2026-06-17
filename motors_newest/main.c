@@ -80,6 +80,13 @@ int main(void)
 
             log_msg("MSG = %s", MSG);
 
+            // A freshly-issued command must not inherit a stale operator-stop. g_stop
+            // latches (exp_check keeps returning STOP once S is seen) and was only
+            // cleared inside run_explore, which silently disabled EXP1/SWEEPQ/ADV after
+            // any earlier S-stop. Clear it here at dispatch (safe: a running command
+            // polls UART itself; EXPLORE manages g_stop internally).
+            g_stop = 0;
+
             // =========================
             // FORWARD UNTIL STOP
             // =========================
@@ -693,6 +700,8 @@ int main(void)
         // ---- test sub-command: explore the single object straight ahead ----
         else if (strcmp(MSG, "EXP1") == 0)
         {
+            g_black_ack();   // clear any stale cliff latch; the slow approach + monitor
+                             // re-assert a real cliff within sub-mm (sensor leads wheels)
             int moved = 0;
             int r = approach_object(&ori, &moved);
             if (r == ADV_DONE)
@@ -708,6 +717,8 @@ int main(void)
                 }
                 else { log_msg("classify error (%d) - object skipped", size); }
             }
+            else if (r == ADV_BLACK) log_msg("EXP1: aborted - black/cliff (recalibrate / move off tape)");
+            else if (r == ADV_STOP)  log_msg("EXP1: aborted - stop");
             send_orientation(&ori);
         }
 
@@ -726,11 +737,14 @@ int main(void)
         // ---- test sub-command: monitored 300 mm advance ----
         else if (strcmp(MSG, "ADV") == 0)
         {
+            g_black_ack();   // clear stale cliff latch; monitor re-asserts a real cliff (slow move)
             int moved = 0;
             int r = advance_monitored(&ori, EXP_ADVANCE_MM, &moved);
             char m[48];
             sprintf(m, "ADVR,%d,%d", r, moved);
             send_message(m);
+            if (r == ADV_BLACK) log_msg("ADV: aborted - black/cliff (recalibrate / move off tape)");
+            else if (r == ADV_STOP) log_msg("ADV: aborted - stop");
             send_orientation(&ori);
         }
 

@@ -52,6 +52,15 @@ crosses an edge (the ahead-of-wheels mounting gives the margin). It **auto-start
 calibration is loaded** (an uncalibrated monitor could read the floor as black and freeze motion).
 Recovery from a black halt is a **reverse or turn** — intentionally *not* gated.
 
+**Latched-flag lifecycle (avoid stale-disable across commands):** both `g_stop` (operator `S`,
+latched in `exp_check`) and `g_black` (sticky-set by the monitor, never self-cleared) persist
+until explicitly reset. To stop a stale flag from silently disabling a freshly-issued command:
+`g_stop` is reset at **command dispatch** (every command); `g_black` is acked on-halt by the fast
+forward commands (`F`/`FB`/`O`/`MOVE`/`R`/`L` — self-heal) and **cleared at entry** by the slow
+diagnostic commands (`EXP1`/`ADV`/`SWEEPQ`) where the monitor safely re-asserts a real cliff within
+~one poll. `g_black` is **never** cleared globally at dispatch (that would open a re-assert window
+on the fast `SPEED_FAST` moves).
+
 ## 6. The EXPLORE algorithm (`run_explore`, loops until operator `S`)
 1. **Sweep.** From the current pose ("scan origin"), rotate **in place through 180°** about the
    current heading, in fine increments; the forward sensor profiles the surroundings and the robot
