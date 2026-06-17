@@ -119,8 +119,10 @@ panel shows all wireless **`LOG`** lines.
 - **Angular resolution** capped by the forward sensor's ~25° cone (close, equal-distance objects can
   merge).
 - **Sweep reach** is ≤ ~0.5 m, so a sweep only sees nearby objects; coverage comes from 300 mm hops.
-- The overhead-classification hang/average bug is **fixed** in `classify_object`; if the standalone
-  `O` command keeps a separate inline copy, verify it has the same hardening.
+- Overhead classification is **hardened** (bounded attempts; out-of-range excluded from the
+  distance average; returns an error instead of guessing/hanging). All callers — `EXP1`, `O`, and
+  `EXPLORE` — share this via `classify_object`, and the `O`/`EXP1` approach loops are step-capped
+  (`EXP_APPROACH_CAP`).
 
 ---
 *Keep this file current — see the MAINTENANCE note at the top.*
