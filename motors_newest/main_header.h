@@ -36,6 +36,12 @@
 
 #define TURN_90_STEPS   800
 #define TURN_180_STEPS  1500
+// No-slip step counts for in-place turns at SPEED_ULTRA_SLOW: at that speed there is no
+// wheel slip, so the old SPEED_TURN-calibrated 1500 over-rotated to ~216 deg. Recalculated:
+// 1500*180/216 = 1250 for 180 deg, half for 90 deg (matches geometry: track 12.5 cm,
+// cm/step = pi*8/1600). Used by turn_* and exp_rotate_deg; sweep_rotate keeps TURN_90_STEPS.
+#define TURN_90_STEPS_US   625
+#define TURN_180_STEPS_US  1250
 #define MOVE_UNIT       500
 
 #define SPEED_FAST      5700
@@ -456,29 +462,28 @@ static int stop_on_uart_S(void)                 // operator pressed stop
     return 0;
 }
 
-// NOTE: TURN_90_STEPS/TURN_180_STEPS are calibrated at SPEED_TURN (fast), where wheel
-// slip absorbs part of each turn. Running these step counts slower removes the slip and
-// OVER-rotates (~216 deg for "180"), so in-place turns must stay at SPEED_TURN. Forward
-// translation is the part kept slow.
+// In-place turns run at SPEED_ULTRA_SLOW (deterministic, no slip) using the no-slip
+// step counts TURN_*_STEPS_US (the SPEED_TURN-era 1500 over-rotated to ~216 deg at this
+// speed; 1250/625 give exact 180/90). Forward translation is also slow.
 static void turn_left_90(void)
 {
     move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW);
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
-    stepper_steps(TURN_90_STEPS, -TURN_90_STEPS);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
+    stepper_steps(TURN_90_STEPS_US, -TURN_90_STEPS_US);
     wait_steps_done();
 }
 
 static void turn_right_90(void)
 {
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
-    stepper_steps(-TURN_90_STEPS, TURN_90_STEPS);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
+    stepper_steps(-TURN_90_STEPS_US, TURN_90_STEPS_US);
     wait_steps_done();
 }
 
 static void turn_180(void)
 {
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);
-    stepper_steps(TURN_180_STEPS, -TURN_180_STEPS);
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
+    stepper_steps(TURN_180_STEPS_US, -TURN_180_STEPS_US);
     wait_steps_done();
 }
 

@@ -36,7 +36,10 @@ small cliff from the true boundary is **deferred**; for now *all black = do-not-
   - `stepper_halt()` = `stepper_reset()`+`stepper_enable()` — cancels in-flight + queued steps now.
   - `move_batch_until(steps, speed, stop_fn)` — issues one batch, **polls to completion**, halts the
     instant `stop_fn()` fires (prevents step-loss *and* gives prompt stops).
-- **Calibration:** 1600 steps/rev; `TURN_90_STEPS = 800`; `MOVE_UNIT = 500` steps (~6 cm).
+- **Calibration:** 1600 steps/rev; `MOVE_UNIT = 500` steps (~6 cm). In-place **turns run at
+  `SPEED_ULTRA_SLOW`** (no slip) using no-slip-calibrated counts `TURN_90_STEPS_US = 625` /
+  `TURN_180_STEPS_US = 1250` (the old SPEED_TURN-era 800/1500 over-rotate ~1.2× at this speed).
+  `sweep_rotate` (SWEEPQ) still uses the old `TURN_90_STEPS = 800` and slightly over-covers — left as-is.
 - **Orientation** (`orientation_t`): quadrant `ort` (1=N,2=E,3=S,4=W) + `theta` (0–90°);
   `get_heading = (ort−1)·90 + theta`. Firmware updates it on *deliberate* turns; the UI keeps live
   (x,y,heading) by integrating `ODOM`/`ORT`.

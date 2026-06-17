@@ -105,9 +105,9 @@ static int exp_check(void)
 // Proportional in-place turn by signed degrees (+ = CW), TURN_90 calibration.
 static void exp_rotate_deg(orientation_t *ori, float deg)
 {
-    int s = (int)(fabsf(deg) * (float)TURN_90_STEPS / 90.0f);
+    int s = (int)(fabsf(deg) * (float)TURN_90_STEPS_US / 90.0f);   // no-slip count (see turn_180)
     if (s <= 0) return;
-    stepper_set_speed(SPEED_TURN, SPEED_TURN);   // TURN_90_STEPS calibrated at SPEED_TURN (see turn_180)
+    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
     if (deg >= 0) stepper_steps(-s, s);   // CW
     else          stepper_steps(s, -s);   // CCW
     wait_steps_done();
