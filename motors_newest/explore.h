@@ -132,15 +132,26 @@ static void exp_rotate_rel(orientation_t *ori, float rel)
 // (centroid relative heading + nearest distance). Returns object count, or
 // -2 (black) / -3 (operator stop). Leaves heading restored to the origin.
 // ------------------------------------------------------
+// Carries the fractional step across the fine 0.5-deg sweep increments so 360 of them
+// sum to exactly TURN_180_STEPS_US (1280) with no truncation drift. Reset per sweep.
+static float g_sweep_residual = 0.0f;
+
 // Blocking IN-PLACE rotation by signed deg (+ = CW). Polls stepper_steps_done so no
 // steps are lost (unlike the non-blocking turn_degree), then settles before sampling.
+// Uses the same no-slip calibration as turn_180 (TURN_180_STEPS_US/180 steps per deg),
+// accumulating the fractional remainder so the reported bearing matches the physical heading.
 static void sweep_rotate(orientation_t *ori, float deg)
 {
-    int s = (int)(fabsf(deg) * (float)TURN_90_STEPS / 90.0f);
-    if (s < 1) s = 1;
+    float want = fabsf(deg) * (float)TURN_180_STEPS_US / 180.0f + g_sweep_residual;
+    int   s    = (int)(want + 0.5f);     // round to nearest whole step
+    g_sweep_residual = want - (float)s;  // keep remainder for the next increment
+    if (s < 0) s = 0;
     stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);   // slow + smooth for fine sampling
-    if (deg >= 0) stepper_steps(-s, s);   // in-place CW
-    else          stepper_steps(s, -s);   // in-place CCW
+    if (s > 0)
+    {
+        if (deg >= 0) stepper_steps(-s, s);   // in-place CW
+        else          stepper_steps(s, -s);   // in-place CCW
+    }
     while (!stepper_steps_done()) sleep_msec(2);
     sleep_msec(SWEEP_SETTLE_MS);
     rotate_orientation(ori, deg);
@@ -149,6 +160,7 @@ static void sweep_rotate(orientation_t *ori, float deg)
 static int sweep_collect(orientation_t *ori, exp_obj_t *objs, int maxn)
 {
     read_distance_forward_raw();
+    g_sweep_residual = 0.0f;              // independent runs: no carry from a prior sweep
 
     int steps = (int)(180.0f / SWEEP_STEP_DEG);
 
