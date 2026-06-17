@@ -653,6 +653,16 @@ int main(void)
             send_orientation(&ori);
         }
 
+        // ---- test sub-command: the open-loop ~5 mm final nudge in isolation ----
+        else if (strcmp(MSG, "NUDGE") == 0)
+        {
+            g_black_ack();                 // slow tiny move; clear stale cliff latch (monitor re-asserts)
+            int hit = final_nudge();
+            if (hit) log_msg("NUDGE: halted on black/cliff");
+            else     log_msg("NUDGE: done (~%d mm)", EXP_FINAL_NUDGE_MM);
+            send_orientation(&ori);
+        }
+
         // ---- test sub-command: read the thermistor (rock temperature) ----
         else if (strcmp(MSG, "TEMP") == 0)
         {
