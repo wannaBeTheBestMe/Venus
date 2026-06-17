@@ -35,6 +35,8 @@
 #define SWEEP_MIN_OBJ_STEPS   4       // an object must persist this many steps to count (noise filter)
 #define SWEEP_GAP_STEPS       4       // out-of-range steps that close an object
 #define SWEEP_SEG_CONFIRM     3       // sustained off-band steps that split into a new distance level
+#define EXP_OH_SAMPLES        10      // overhead readings used to classify an object
+#define EXP_OH_MAX_ATTEMPTS   40      // cap on overhead read attempts (sensor-stuck timeout)
 
 // advance_monitored / approach_object return codes
 #define ADV_DONE      0
@@ -311,29 +313,42 @@ static void return_to_origin(orientation_t *ori, float origin_heading, int units
 // Returns size: -1 = mountain, -2 = color error, else 3 or 6. *out_color set
 // for rocks.
 // ------------------------------------------------------
+// Returns: -1 mountain, -2 color-sensor error, -3 overhead-sensor error, else 3 or 6.
 static int classify_object(Cal *cal, enum e_rock_color *out_color)
 {
     enum e_rock_color rock_color = identify_rock_color(cal);
     if (rock_color == ERROR) return -2;
 
-    const int num = 10;
-    struct dist_oh_t p[10];
-    int i = 0;
-    while (i < num)
+    // Collect up to EXP_OH_SAMPLES readings, but bounded by EXP_OH_MAX_ATTEMPTS so a
+    // disconnected/stuck overhead sensor ({-1,false}) can't spin us forever.
+    int collected = 0;       // total readings kept (valid distance OR out-of-range)
+    int noor      = 0;       // out-of-range readings (flag_black) = tall/no-top
+    long sum      = 0;       // sum of VALID distances only (never the -1 OOR sentinel)
+    int  nv       = 0;       // count of valid distances
+    int  oor_recent = 0;     // OOR among the last 5 kept readings (tall-black rule)
+
+    for (int attempts = 0; collected < EXP_OH_SAMPLES && attempts < EXP_OH_MAX_ATTEMPTS; attempts++)
     {
         struct dist_oh_t nr = read_distance_overhead();
-        if (nr.dist_oh == -1 && nr.flag_black == false) continue;
-        p[i++] = nr;
+        if (nr.dist_oh == -1 && nr.flag_black == false) continue;   // pure disconnect: retry (bounded)
+
+        int is_oor = (nr.flag_black);          // out of range = tall / no top in view
+        if (is_oor) noor++;
+        else { sum += nr.dist_oh; nv++; }
+
+        collected++;
+        if (collected > EXP_OH_SAMPLES - 5) oor_recent += is_oor ? 1 : 0;  // last 5 kept
     }
 
-    int flag_not_black = 0;
-    for (int j = num - 5; j < num; j++) if (p[j].flag_black == false) flag_not_black++;
+    if (collected < 5) return -3;              // sensor effectively unusable -> error, don't guess
 
-    if (flag_not_black == 0 && rock_color == BLACK) { *out_color = BLACK; return 6; }
+    // Tall/black rock: the last readings were all out-of-range (no top seen) and front is black.
+    if (oor_recent >= 5 && rock_color == BLACK) { *out_color = BLACK; return 6; }
 
-    float sum = 0.0f;
-    for (int j = 0; j < num; j++) sum += (float)p[j].dist_oh;
-    int avg = (int)(sum / (float)num);
+    if (nv == 0)                               // all out-of-range -> tall object, can't measure height
+    { *out_color = rock_color; return 6; }
+
+    int avg = (int)(sum / nv);                 // average over VALID distances only
 
     if (avg >= 68 && avg <= 72)      return -1;            // mountain
     else if (avg >= 34)              { *out_color = rock_color; return 3; }
@@ -445,6 +460,10 @@ static void run_explore(orientation_t *ori, Cal *cal)
                 snprintf(fm, sizeof fm, "FOUND_ROCK,%d,%s,%.1f", size, rock_color_str(col), -1.0f);
                 send_message(fm);
                 send_orientation(ori);
+            }
+            else  // -2 color error / -3 overhead sensor error: skip, don't fabricate a rock
+            {
+                log_msg("classify error (%d) - object skipped", size);
             }
 
             return_to_origin(ori, origin_heading, moved);

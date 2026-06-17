@@ -509,6 +509,14 @@ int main(void)
                      }
                      count++;
 
+                     if (count >= EXP_APPROACH_CAP)   // cap: don't drive forever on persistent -1
+                     {
+                         stepper_halt();
+                         print_orientation(&ori);
+                         send_orientation(&ori);
+                         break;
+                     }
+
 		     heading_update();
 
 
@@ -526,64 +534,14 @@ int main(void)
 		 }
 
 
-		// Front color sensor reading
-                enum e_rock_color rock_color = identify_rock_color(&cal);
-                if (rock_color == ERROR) { printf("Color front: total error\n"); continue; }
-
-		    // OH dist reading
-		int32_t num_readings = 10;
-
-		    struct dist_oh_t p_dist_oh[num_readings];
-			struct dist_oh_t new_reading;
-			int32_t i = 0;
-
-            // Getting the readings
-			while (i < num_readings)
-			{
-			    new_reading = read_distance_overhead();
-			    if (new_reading.dist_oh == -1 && new_reading.flag_black == false) {
-				    continue;
-			    }
-			    p_dist_oh[i] = new_reading;
-			    i++;
-			}
-
-            // Special method for checking if big black rock
-			int32_t flag_not_black_count = 0;
-			for (int j = num_readings-5; j < num_readings; j++) {
-				if (p_dist_oh[j].flag_black == false) {
-					flag_not_black_count++;
-				}
-			}
-
-            // Directly storing that this rock is a big black rock if true, else
-            // proceeding with normal method of taking the average overhead distance
-            // reading with bins
-			if (flag_not_black_count == 0 && rock_color == BLACK) {
-				rock_data.color = BLACK;
-				rock_data.size = 6;
-			} else {
-
-				float sum = 0.0f;
-				for (int32_t j = 0; j < num_readings; j++) {
-					sum += (float)p_dist_oh[j].dist_oh;
-				}
-
-				int32_t avg_dist_oh = (int32_t)(sum / (float)i);
-
-				log_msg("AVG Overhead dist: %d mm", (int)avg_dist_oh);
-
-				// Classifying rock as 3x3x3 or 6x6x6 (based on overhead dist reading)
-				if (avg_dist_oh >= 68 && avg_dist_oh <= 72) { // Mountain
-					// "mountain"
-				} else if (avg_dist_oh >= 34) { // Small rock
-					rock_data.color = rock_color;
-					rock_data.size = 3;
-				} else { // Big rock
-					rock_data.color = rock_color;
-					rock_data.size = 6;
-				}
-			}
+                // Classify the object directly ahead (front color + overhead),
+                // hardened against stuck/out-of-range overhead readings.
+                enum e_rock_color col = NONE;
+                int size = classify_object(&cal, &col);
+                if (size == -2) { log_msg("Color front: total error"); continue; }
+                if (size == -3) { log_msg("Overhead sensor error - object skipped"); continue; }
+                rock_data.size  = size;                 // -1 mountain, or 3/6
+                rock_data.color = (size > 0) ? col : NONE;
 
             if (rock_data.size == -1) {
                 log_msg("Mountain");
@@ -748,6 +706,7 @@ int main(void)
                     sprintf(fm, "FOUND_ROCK,%d,%s,%.1f", size, rock_color_str(col), -1.0f);
                     send_message(fm);
                 }
+                else { log_msg("classify error (%d) - object skipped", size); }
             }
             send_orientation(&ori);
         }
