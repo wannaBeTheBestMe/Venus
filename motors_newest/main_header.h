@@ -37,11 +37,11 @@
 #define TURN_90_STEPS   800
 #define TURN_180_STEPS  1500
 // No-slip step counts for in-place turns at SPEED_ULTRA_SLOW. Calibrated empirically:
-// at 1250 steps a U-turn over-rotated to ~200 deg (9x U returned to start = 9*200 = 1800
-// = 5 full turns). Recalculated: 1250*180/200 = 1125 for 180 deg, half for 90 deg.
-// Used by turn_* and exp_rotate_deg; sweep_rotate keeps the old TURN_90_STEPS (SWEEPQ).
-#define TURN_90_STEPS_US   563
-#define TURN_180_STEPS_US  1125
+// at 1250 steps a U-turn was ~160 deg (9x U returned to start = 9*160 = 1440 = 4 full
+// turns; confirmed: U at 1125 steps under-shot). Recalculated: 1250*180/160 = 1406 for
+// 180 deg, half for 90. Used by turn_* and exp_rotate_deg; sweep_rotate keeps TURN_90_STEPS.
+#define TURN_90_STEPS_US   703
+#define TURN_180_STEPS_US  1406
 #define MOVE_UNIT       500
 
 #define SPEED_FAST      5700

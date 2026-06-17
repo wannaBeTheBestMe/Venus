@@ -39,8 +39,8 @@ small cliff from the true boundary is **deferred**; for now *all black = do-not-
   - `move_batch_until(steps, speed, stop_fn)` — issues one batch, **polls to completion**, halts the
     instant `stop_fn()` fires (prevents step-loss *and* gives prompt stops).
 - **Calibration:** 1600 steps/rev; `MOVE_UNIT = 500` steps (~6 cm). In-place **turns run at
-  `SPEED_ULTRA_SLOW`** (no slip) using no-slip-calibrated counts `TURN_90_STEPS_US = 563` /
-  `TURN_180_STEPS_US = 1125` (empirically tuned via the 9×U realignment method).
+  `SPEED_ULTRA_SLOW`** (no slip) using no-slip-calibrated counts `TURN_90_STEPS_US = 703` /
+  `TURN_180_STEPS_US = 1406` (empirically tuned via the 9×U realignment + U×2 confirm method).
   `sweep_rotate` (SWEEPQ) still uses the old `TURN_90_STEPS = 800` and slightly over-covers — left as-is.
 - **Orientation** (`orientation_t`): quadrant `ort` (1=N,2=E,3=S,4=W) + `theta` (0–90°);
   `get_heading = (ort−1)·90 + theta`. Firmware updates it on *deliberate* turns; the UI keeps live
