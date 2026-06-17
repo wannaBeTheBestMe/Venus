@@ -560,7 +560,7 @@ static int sweep_right_for_object(orientation_t *ori)
 
         print_orientation(ori);
 
-        int32_t dist = read_distance_forward();
+        int32_t dist = read_distance_forward_raw();   // raw: a panning sweep sees real big jumps
 
         printf("DIST = %d mm\n", (int)dist);
 
@@ -633,7 +633,7 @@ static void sweep_minute(void)
     {
         turn_minute();
 
-        int32_t dist = read_distance_forward();
+        int32_t dist = read_distance_forward_raw();   // raw: a panning sweep sees real big jumps
 
         printf("DIST = %d mm\n", (int)dist);
 
