@@ -1,0 +1,6 @@
+sudo cp cat-display /boot -f
+sudo chmod +x /boot/cat-display
+sudo cp boot-startup.sh /boot/startup.sh -f
+sudo chmod +x  /boot/startup.sh
+cp student-startup.sh /home/student/startup.sh
+sudo chmod +x  /home/student/startup.sh
