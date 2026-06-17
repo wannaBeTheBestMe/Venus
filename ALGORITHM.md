@@ -29,6 +29,8 @@ small cliff from the true boundary is **deferred**; for now *all black = do-not-
 - **Forward VL53L0X** — objects/obstacles ahead. Range ≤ 500 mm, **wide ~25° cone**.
 - **Overhead VL53L0X** (≤ 90 mm) — object **size** classification once approached.
 - **Front TCS34725** — rock **color** (red/green/blue/black/white).
+- **Thermistor on ADC0** — rock **temperature** (°C; Steinhart-Hart). Read at the close/stop
+  position during classification; standalone live readout via `TEMP` (loops until `S`).
 
 ## 4. Low-level conventions
 - **Stepper motion is non-blocking** and buffers only one "next" command — issuing faster than
@@ -100,7 +102,7 @@ neighbors. The detector (`sweep_collect`):
   resolution, not a bug).
 
 ## 8. Object classification (`classify_object`)
-Approach two-phase to ~15 mm at the slowest speed, then a fixed open-loop ~5 mm nudge (forward sensor is unreliable below ~15 mm), parking the overhead over the rock. Then: front color sensor → color; overhead sensor (10 readings) → size.
+Approach two-phase to ~15 mm at the slowest speed, then a fixed open-loop ~5 mm nudge (forward sensor is unreliable below ~15 mm), parking the overhead over the rock. Then: front color sensor → color; overhead sensor (10 readings) → size; thermistor (ADC0) → temperature. A rock is reported as `FOUND_ROCK,size,color,temp` (temp `n/a` if the ADC read is invalid).
 All forward approaches share one function, `approach_object` (`EXP1`, `EXPLORE`, `O`, and `FB`), so the coarse-then-fine creep, cap, and cliff/stop handling are identical everywhere.
 Hardened against bad sensor data: overhead sampling is **bounded** (`EXP_OH_MAX_ATTEMPTS`) so a
 stuck/disconnected sensor can't hang; **out-of-range readings are excluded from the distance
