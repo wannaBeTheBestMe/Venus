@@ -23,6 +23,8 @@
 #define EXP_ADVANCE_MM        300     // forward hop when a sweep finds nothing
 #define EXP_APPROACH_STOP_MM  40      // coarse stop distance (phase 1) when approaching an object
 #define EXP_APPROACH_FINAL_MM 25      // fine stop distance (phase 2) to park overhead over the rock
+#define EXP_APPROACH_STEP     200     // phase-1 step between heading updates (was a full MOVE_UNIT;
+                                      // smaller = re-aim more often, ~matches the old 4 s cadence)
 #define EXP_FINE_STEP         120     // small batch for the slow final creep
 #define EXP_FINE_CAP          12      // max fine-creep batches (bounds overrun if sensor goes -1)
 #define EXP_MOUNTAIN_NEAR_MM  120     // forward proximity that trips obstacle avoidance
@@ -31,7 +33,7 @@
 #define EXP_CLUSTER_GAP_DEG   3       // >this many blank degrees closes an object cluster
 #define EXP_MM_PER_UNIT       61      // ~MOVE_UNIT(500) * 0.0123 cm/step * 10
 #define EXP_MON_SLEEP_MS      20
-#define EXP_APPROACH_CAP      20      // max move-units before giving up an approach
+#define EXP_APPROACH_CAP      40      // max phase-1 steps before giving up (steps now smaller)
 #define SWEEP_STEP_DEG        0.5f    // in-place rotation increment per sweep sample (finer = slower)
 #define SWEEP_SETTLE_MS       60      // settle after each step before sampling the forward sensor
 #define SWEEP_NEAR_TOL_MM     70      // readings within this of the object's mean = same rock
@@ -256,8 +258,9 @@ static int approach_object(orientation_t *ori, int *moved)
         int32_t dist = read_distance_forward();
         if (dist >= 0 && dist <= EXP_APPROACH_STOP_MM) break;   // reached coarse stop -> phase 2
 
+        // step in EXP_APPROACH_STEP (< MOVE_UNIT) so heading_update runs more often;
         // halts mid-batch on cliff (g_black) or on reaching the coarse stop
-        if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, exp_stop_approach))
+        if (move_batch_until(EXP_APPROACH_STEP, SPEED_ULTRA_SLOW, exp_stop_approach))
         {
             if (g_black) { *moved = count; return ADV_BLACK; }
             break;          // reached coarse stop mid-batch -> phase 2
