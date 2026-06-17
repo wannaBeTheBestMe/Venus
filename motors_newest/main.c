@@ -21,6 +21,8 @@ int main(void)
 
     iic_init(IIC0);
 
+    adc_init();   // thermistor (rock temperature) on ADC0
+
     bool sensors_initialised = all_sensors_init();
     if (!sensors_initialised) {
         printf("Error with sensor initialisation\n");
@@ -544,7 +546,7 @@ int main(void)
                 // Classify the object directly ahead (front color + overhead),
                 // hardened against stuck/out-of-range overhead readings.
                 enum e_rock_color col = NONE;
-                int size = classify_object(&cal, &col);
+                int size = classify_object(&cal, &col, &rock_data.temp);
                 if (size == -2) { log_msg("Color front: total error"); continue; }
                 if (size == -3) { log_msg("Overhead sensor error - object skipped"); continue; }
                 rock_data.size  = size;                 // -1 mountain, or 3/6
@@ -707,12 +709,13 @@ int main(void)
             if (r == ADV_DONE)
             {
                 enum e_rock_color col = NONE;
-                int size = classify_object(&cal, &col);
+                float temp = TEMP_INVALID;
+                int size = classify_object(&cal, &col, &temp);
                 if (size == -1) { send_message("MOUNTAIN,30"); }
                 else if (size > 0)
                 {
                     char fm[64];
-                    sprintf(fm, "FOUND_ROCK,%d,%s,%.1f", size, rock_color_str(col), -1.0f);
+                    sprintf(fm, "FOUND_ROCK,%d,%s,%.1f", size, rock_color_str(col), temp);
                     send_message(fm);
                 }
                 else { log_msg("classify error (%d) - object skipped", size); }
@@ -753,6 +756,16 @@ int main(void)
         {
             avoid_mountain(&ori);
             send_orientation(&ori);
+        }
+
+        // ---- test sub-command: read the thermistor (rock temperature) ----
+        else if (strcmp(MSG, "TEMP") == 0)
+        {
+            float t = read_temperature();
+            char m[48];
+            sprintf(m, "TEMP,%.1f", t);
+            send_message(m);
+            log_msg("TEMP %.1f C", t);
         }
 
         // ---- wireless logging toggle (testing tool; LOGOFF for the demo) ----
@@ -835,6 +848,8 @@ int main(void)
     }
 
     stepper_destroy();
+
+    adc_destroy();
 
     pynq_destroy();
 

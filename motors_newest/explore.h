@@ -346,8 +346,9 @@ static void return_to_origin(orientation_t *ori, float origin_heading, int units
 // for rocks.
 // ------------------------------------------------------
 // Returns: -1 mountain, -2 color-sensor error, -3 overhead-sensor error, else 3 or 6.
-static int classify_object(Cal *cal, enum e_rock_color *out_color)
+static int classify_object(Cal *cal, enum e_rock_color *out_color, float *out_temp)
 {
+    if (out_temp) *out_temp = read_temperature();   // read at the close (stopped) position
     enum e_rock_color rock_color = identify_rock_color(cal);
     if (rock_color == ERROR) return -2;
 
@@ -481,7 +482,8 @@ static void run_explore(orientation_t *ori, Cal *cal)
             if (r == ADV_BLACK) { handle_black(ori); return_to_origin(ori, origin_heading, moved); continue; }
 
             enum e_rock_color col = NONE;
-            int size = classify_object(cal, &col);
+            float temp = TEMP_INVALID;
+            int size = classify_object(cal, &col, &temp);
             if (size == -1)
             {
                 avoid_mountain(ori);
@@ -489,7 +491,7 @@ static void run_explore(orientation_t *ori, Cal *cal)
             else if (size > 0)
             {
                 char fm[64];
-                snprintf(fm, sizeof fm, "FOUND_ROCK,%d,%s,%.1f", size, rock_color_str(col), -1.0f);
+                snprintf(fm, sizeof fm, "FOUND_ROCK,%d,%s,%.1f", size, rock_color_str(col), temp);
                 send_message(fm);
                 send_orientation(ori);
             }

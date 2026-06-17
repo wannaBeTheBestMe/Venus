@@ -4,6 +4,42 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
+
+/* ─── Temperature (thermistor on ADC0) ──────────────────────────────────── */
+// From Venus/individual_sensors/temperature.c: ADC voltage divider -> resistance
+// -> Steinhart-Hart -> degrees C. Requires adc_init() at startup.
+#define TEMP_INVALID  (-100.0f)   // sentinel: no valid reading
+
+static int r_to_t(double r_t)
+{
+    const double A = 0.0007984;
+    const double B = 0.0002664;
+    const double C = 0.00000013009;
+    double lnR = log(r_t * 1000);
+    double t = 1.0 / (A + B * lnR + C * lnR * lnR * lnR);
+    return (int)(t - 273.15);
+}
+
+// Average a few ADC samples; returns degrees C, or TEMP_INVALID if no usable read.
+static float read_temperature(void)
+{
+    const double v_ref = 3.3, R2 = 0.33;
+    double sum = 0.0;
+    int n = 0;
+    for (int i = 0; i < 8; i++)
+    {
+        double v_out = adc_read_channel(ADC0);
+        if (v_out > 0.05 && v_out < v_ref)          // guard div-by-zero / rail
+        {
+            double r_t = (v_ref - v_out) * (R2 / v_out);
+            int t = r_to_t(r_t);
+            if (t > -20 && t < 120) { sum += t; n++; }   // drop implausible
+        }
+        sleep_msec(5);
+    }
+    return (n > 0) ? (float)(sum / n) : TEMP_INVALID;
+}
 
 /* ─── Distance sensors ──────────────────────────────────────────────────── */
 #define SYSRANGE_START        0x00

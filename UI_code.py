@@ -338,6 +338,17 @@ class VenusDashboard(QMainWindow):
                            QPen(QColor(RED_ALERT), 1, Qt.PenStyle.DashLine), QBrush(fill))
         self.findings_list.addItem(f"[NO-GO] cliff box @ ({round(cx/SCALE,1)}, {round(cy/SCALE,1)})cm")
 
+    @staticmethod
+    def _temp_str(temp):
+        # firmware sends -100 (TEMP_INVALID) or -1 (legacy placeholder) for "no reading"
+        return "n/a" if temp is None or temp <= -99 or temp == -1 else f"{round(temp,1)}°C"
+
+    def _draw_rock_temp_label(self, x_cm, y_cm, sz_cm, temp):
+        label = self.scene.addText(self._temp_str(temp))
+        label.setDefaultTextColor(QColor("#FF6B6B"))
+        f = QFont(); f.setPointSizeF(7.0); label.setFont(f)
+        label.setPos(x_cm * SCALE + (sz_cm * SCALE) / 2 + 2, y_cm * SCALE - (sz_cm * SCALE) / 2)
+
     def _draw_mountain(self, cx, cy, size_cm):
         r = (size_cm / 2.0) * SCALE
         self.scene.addEllipse(cx - r, cy - r, 2*r, 2*r,
@@ -694,7 +705,8 @@ class VenusDashboard(QMainWindow):
             elif cmd == "ROCK":
                 x, y, sz, col, temp = float(parts[1]), float(parts[2]), int(parts[3]), parts[4], float(parts[5])
                 self.scene.addItem(RockSample(x, y, sz, col, temp))
-                self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {temp}°C")
+                self._draw_rock_temp_label(x, y, sz, temp)
+                self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {self._temp_str(temp)}")
 
             # --- AUTO-LOCATING ROCK ---
             elif cmd == "FOUND_ROCK":
@@ -712,7 +724,8 @@ class VenusDashboard(QMainWindow):
 
                 # Drop the rock exactly under the robot
                 self.scene.addItem(RockSample(real_x, real_y, sz, col, temp))
-                self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {temp}°C")
+                self._draw_rock_temp_label(real_x, real_y, sz, temp)
+                self.findings_list.addItem(f"[{robot_name}] {col.upper()} ANOMALY | {sz}cm | {self._temp_str(temp)}")
 
             # --- EXPLORE: explored semicircle region ---
             elif cmd == "REGION":
@@ -759,6 +772,12 @@ class VenusDashboard(QMainWindow):
                 ox = c.x() + total_cm * SCALE * math.sin(angle_rad)
                 oy = c.y() - total_cm * SCALE * math.cos(angle_rad)
                 self._draw_sweep_object(ox, oy, c, total_cm, angle_deg)
+
+            # --- standalone temperature reading ---
+            elif cmd == "TEMP":
+                temp = float(parts[1]) if len(parts) > 1 else -100.0
+                self.log_widget.append(
+                    f"<span style='color:#FF6B6B;'>[TEMP] {self._temp_str(temp)}</span>")
 
             # --- WIRELESS LOG line (already shown raw above; just don't parse as geometry) ---
             elif cmd == "LOG":
