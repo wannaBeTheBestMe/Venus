@@ -238,6 +238,14 @@ static int exp_stop_final(void)              // cliff or object within fine stop
 }
 static int stop_on_gblack(void) { return g_black; }   // cliff-only (for the open-loop final nudge)
 
+// Open-loop forward nudge ~EXP_FINAL_NUDGE_MM at the slowest speed (dead-reckoned, since the
+// forward sensor is unreliable below ~15 mm). Halts early only on a cliff. Returns 1 if a cliff
+// halted it, else 0. Shared by approach_object's final step and the NUDGE test command.
+static int final_nudge(void)
+{
+    return move_batch_until(EXP_FINAL_NUDGE_STEPS, SPEED_ULTRA_ULTRA_SLOW, stop_on_gblack);
+}
+
 // Global cliff-stop helpers for manual forward commands (poll the monitor's flag).
 static int stop_black_or_S(void) { return g_black || stop_on_uart_S(); }
 static void g_black_ack(void) { g_black = 0; }   // re-arm after handling a black halt
@@ -299,11 +307,7 @@ static int approach_object(orientation_t *ori, int *moved)
     // Only when we actually confirmed the 15 mm stop; halts early only on a cliff.
     if (arrived)
     {
-        if (move_batch_until(EXP_FINAL_NUDGE_STEPS, SPEED_ULTRA_ULTRA_SLOW, stop_on_gblack))
-        {
-            *moved = count;
-            return ADV_BLACK;            // cliff appeared during the nudge
-        }
+        if (final_nudge()) { *moved = count; return ADV_BLACK; }   // cliff during the nudge
     }
     *moved = count;
     return ADV_DONE;
@@ -346,13 +350,14 @@ static int advance_monitored(orientation_t *ori, int mm, int *moved)
 // ------------------------------------------------------
 static void return_to_origin(orientation_t *ori, float origin_heading, int units)
 {
-    stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
-    stepper_steps(TURN_180_STEPS, -TURN_180_STEPS);
-    wait_steps_done();
-    rotate_orientation(ori, 180.0f);
+    // Reverse straight back along the approach path - NO about-face turn. The 180 turn
+    // was the main RET drift source (any angle error skewed the whole return path); reversing
+    // keeps the current heading and retraces the path, so only straight-line slip remains.
+    // (The trailing caster leads while reversing; SPEED_ULTRA_SLOW keeps it stable.)
+    for (int i = 0; i < units; i++) { move_forward(-MOVE_UNIT, SPEED_ULTRA_SLOW); }   // move_forward blocks
 
-    for (int i = 0; i < units; i++) { move_forward(MOVE_UNIT, SPEED_ULTRA_SLOW); }   // move_forward now blocks
-
+    // Restore heading to the scan-center heading - a single rotation, done at the origin so its
+    // error doesn't shift the return position. For RET (no bearing offset) delta = 0 -> no turn.
     float d = origin_heading - get_heading(ori);
     while (d > 180.0f)  d -= 360.0f;
     while (d < -180.0f) d += 360.0f;

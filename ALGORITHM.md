@@ -71,7 +71,9 @@ on the fast `SPEED_FAST` moves).
    **40 mm** at `SPEED_ULTRA_SLOW`, then a fine creep to **15 mm** at `SPEED_ULTRA_ULTRA_SLOW`
    (slowest), then a fixed open-loop **~5 mm** nudge so the **overhead sensor parks over the rock** → 
    **classify** (front color + overhead size). **Rock** → send `FOUND_ROCK,size,color`. **Mountain**
-   → run avoidance. Then **return to the scan origin** (reverse dead-reckoning) and continue.
+   → run avoidance. Then **return to the scan origin** by **driving straight in reverse** along the
+   approach path (no about-face turn — eliminates the 180° turn error that skewed the return),
+   then restore heading, and continue.
 3. **If none**, drive **forward ~300 mm** (monitored) and loop.
 
 **Hazard handlers:**
@@ -115,7 +117,7 @@ panel shows all wireless **`LOG`** lines.
 - **Per-behavior test sub-commands:** `CALBLACK`/`CALRESET`, `CLIFFCHK` (live black readings),
   `MON`/`MONOFF` (cliff monitor), `HU2` (drift-correction), `SWEEPQ` (sweep + report objects),
   `EXP1` (approach+classify one object), `RET` (out-and-back), `ADV` (monitored 300 mm advance),
-  `MTN` (mountain avoidance).
+  `MTN` (mountain avoidance), `NUDGE` (the open-loop ~5 mm final approach step in isolation).
 - **Manual moves** — `F`, `FB`, `O`, `MOVE`, `R`/`L`, `STOPBLACK` — all honor the global cliff-stop.
 - **Logging:** `LOGON`/`LOGOFF` toggle the wireless `LOG` mirror (off for the scored demo).
 
