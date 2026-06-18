@@ -74,6 +74,71 @@ int main(void)
 
     uint16_t c, r, g, b;
 
+    // =====================================================================
+    // F1 AUTORUN — full autonomy + run-on-boot (manual §1.3, §3.2, §4.6)
+    // After READY, auto-enter the EXPLORE mission with NO operator command.
+    // The laptop only listens. A short pre-explore window lets an operator
+    // drop to interactive command mode with a single wireless S/HOLD.
+    //
+    // GUARD: only auto-run if calibrated. cal_loaded (main.c:40) is 1 iff a
+    // valid CALBLACK was restored; it also gates the cliff monitor. Uncalibrated
+    // => monitor OFF => forward motion unsafe => skip autorun, fall through to
+    // the command loop so the operator can run CALBLACK.
+    // =====================================================================
+    if (cal_loaded)
+    {
+        // Optional identification ping (F1 optional; coordinate with F8 — see notes).
+        send_message("HELLO,41");   // <-- set 41 or 80 per board; keep additive to F8 attribution
+        send_message("LOG,AUTORUN: exploring in 5s - send S or HOLD to take manual control");
+
+        // ---- soft-stop window: bounded, non-blocking poll for an early S/HOLD ----
+        // ~5 s settle. NEVER use read_uart_message unguarded (it blocks on a
+        // partial frame, main_header.h:157). Only read AFTER uart_has_data(); and
+        // cap the whole window with a deadline so a malformed frame can't hang boot.
+        const int   AUTORUN_WINDOW_MS = 5000;   // pre-explore settle + opt-out window
+        const int   AUTORUN_POLL_MS   = 50;
+        int         autorun_aborted   = 0;
+        int         waited            = 0;
+
+        while (waited < AUTORUN_WINDOW_MS)
+        {
+            if (uart_has_data(UART0))                 // gate: only then is the read bounded
+            {
+                read_uart_message(UART0, MSG);        // safe: a full frame is already arriving
+                if (strcmp(MSG, "S") == 0 || strcmp(MSG, "HOLD") == 0)
+                {
+                    autorun_aborted = 1;
+                    break;
+                }
+                // any other early byte: ignore, keep settling (don't auto-dispatch here)
+            }
+            sleep_msec(AUTORUN_POLL_MS);
+            waited += AUTORUN_POLL_MS;
+        }
+
+        if (autorun_aborted)
+        {
+            g_stop = 0;   // don't carry the opt-out S into the first manual command
+            send_message("LOG,AUTORUN cancelled - interactive command mode");
+        }
+        else
+        {
+            send_message("LOG,AUTORUN: entering EXPLORE (autonomous)");
+            run_explore(&ori, &cal);          // self-contained: resets g_stop, starts monitor
+            print_orientation(&ori);
+            send_orientation(&ori);
+            // run_explore returns only on operator S / trap give-up; then we
+            // fall through to the command loop below for any manual follow-up.
+            send_message("LOG,AUTORUN: EXPLORE returned - interactive command mode");
+        }
+    }
+    else
+    {
+        // Uncalibrated: cliff monitor is OFF (main.c:54). Do NOT auto-explore.
+        send_message("LOG,AUTORUN skipped - uncalibrated (run CALBLACK)");
+    }
+    // ===================== end F1 AUTORUN =====================
+
     while (1)
     {
         if (uart_has_data(UART0))
@@ -560,6 +625,30 @@ int main(void)
             if (mon_was_on) exp_mon_start();
         }
 
+        // ---- test sub-command: drift check (sweep -> approach one rock -> return -> re-sweep) ----
+        else if (strcmp(MSG, "RSC") == 0)
+        {
+            g_black_ack();   // clear any stale cliff latch (like EXP1)
+
+            float     origin_heading = get_heading(&ori);
+            exp_obj_t objs[EXP_MAX_OBJ];
+            int n = sweep_collect(&ori, objs, EXP_MAX_OBJ);
+            if (n < 2) { log_msg("RSC: need >=2 objects (got %d)", (n < 0) ? 0 : n); }
+            else
+            {
+                exp_obj_t objs0[EXP_MAX_OBJ];
+                for (int i = 0; i < n; i++) objs0[i] = objs[i];
+
+                exp_rotate_rel(&ori, objs[0].rel_deg);   // aim at the first rock
+                int moved = 0;
+                int r = approach_object(&ori, &moved);
+                return_to_origin(&ori, origin_heading, moved);
+                if (r == ADV_DONE) resweep_correct(&ori, objs, objs0, n, 0, 1);  // report=1
+                else               log_msg("RSC: approach aborted (%d) - no drift report", r);
+            }
+            send_orientation(&ori);
+        }
+
         // ---- test sub-command: loop reading downward black sensor ----
         else if (strcmp(MSG, "CLIFFCHK") == 0)
         {
@@ -650,6 +739,19 @@ int main(void)
         else if (strcmp(MSG, "MTN") == 0)
         {
             avoid_mountain(&ori);
+            send_orientation(&ori);
+        }
+
+        // ---- test sub-command: F3 trap/corner escape routine in isolation ----
+        else if (strcmp(MSG, "ESCAPE") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            if (!mon_was_on) exp_mon_start();    // escape_scan/advance need the live cliff monitor
+            g_haz_streak = EXP_TRAP_HAZ_LIMIT;   // pretend we're boxed in, force the escape
+            int r = escape_trap(&ori);
+            log_msg("ESCAPE: result=%d (0=done, 2=stop/fail)", r);
+            haz_reset();
+            if (!mon_was_on) exp_mon_stop();
             send_orientation(&ori);
         }
 

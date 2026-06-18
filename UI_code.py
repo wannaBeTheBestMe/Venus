@@ -275,33 +275,67 @@ class VenusDashboard(QMainWindow):
         self.scene.addLine(-10*SCALE, 0, 10*SCALE, 0, origin_pen)
         self.scene.addLine(0, -10*SCALE, 0, 10*SCALE, origin_pen)
 
+    # Robot config: name → (color_str, fill_hex)
+    ROBOT_CONFIG = {
+        "Robot41": (CYAN,    "#002222"),
+        "Robot80": (MAGENTA, "#220022"),
+    }
+
+    def _make_robot_marker(self, color_str, fill_hex):
+        """Create and return a triangular polygon marker for one robot."""
+        poly = QPolygonF([
+            QPointF(0, -ROBOT_SIZE/2),
+            QPointF(ROBOT_SIZE/2.5, ROBOT_SIZE/2),
+            QPointF(0, ROBOT_SIZE/4),
+            QPointF(-ROBOT_SIZE/2.5, ROBOT_SIZE/2),
+        ])
+        marker = self.scene.addPolygon(poly, QPen(QColor(color_str), 2), QBrush(QColor(fill_hex)))
+        marker.setTransformOriginPoint(0, 0)
+        return marker
+
+    def _bot_state(self, robot_name):
+        """Return (creating if absent) the per-robot state dict for robot_name.
+
+        Key schema — FROZEN for F4/F5 compatibility (IP-4):
+          marker            : QGraphicsPolygonItem on the scene
+          angle             : float, current heading in scene degrees (0=up/N, 90=right/E, …)
+          pending_pt        : (x,y) scene-px or None — provisional boundary crossing
+          sweep_items       : list of QGraphicsItem — cleared each SWEEPQ
+          boundary_segments : list of segments; each segment = [(x,y), …]
+          corner_angles     : list of float — measured corners (deg) from SEARCH
+          tape_hits         : list of (x,y) — legacy tape-boundary hits (STOPBLACK)
+          black_contacts    : list of dict — F5 BLACKPT contacts, per-robot odometry frame
+                             (F5 appends {"pos": (x_cm, y_cm), "heading": deg, "run": int})
+        """
+        if robot_name not in self.bots:
+            color_str, fill_hex = self.ROBOT_CONFIG.get(
+                robot_name, (CYAN, "#002222"))
+            marker = self._make_robot_marker(color_str, fill_hex)
+            marker.setPos(0, 0)
+            marker.setRotation(90)
+            self.bots[robot_name] = {
+                "marker":            marker,
+                "angle":             90,
+                "pending_pt":        None,
+                "sweep_items":       [],
+                "boundary_segments": [[]],
+                "corner_angles":     [],
+                "tape_hits":         [],
+                "black_contacts":    [],
+            }
+        return self.bots[robot_name]
+
     def initialize_robots(self):
-        # Robot 41: Cyan
-        poly41 = QPolygonF([QPointF(0, -ROBOT_SIZE/2), QPointF(ROBOT_SIZE/2.5, ROBOT_SIZE/2), QPointF(0, ROBOT_SIZE/4), QPointF(-ROBOT_SIZE/2.5, ROBOT_SIZE/2)])
-        self.robot41_marker = self.scene.addPolygon(poly41, QPen(QColor(CYAN), 2), QBrush(QColor("#002222")))
-        self.robot41_marker.setTransformOriginPoint(0, 0)
+        """(Re-)create per-robot state and the shared map layers."""
+        # Per-robot state — one dict per known robot name.
+        self.bots = {}
 
-        # Robot 80: Magenta
-        poly80 = QPolygonF([QPointF(0, -ROBOT_SIZE/2), QPointF(ROBOT_SIZE/2.5, ROBOT_SIZE/2), QPointF(0, ROBOT_SIZE/4), QPointF(-ROBOT_SIZE/2.5, ROBOT_SIZE/2)])
-        self.robot80_marker = self.scene.addPolygon(poly80, QPen(QColor(MAGENTA), 2), QBrush(QColor("#220022")))
-        self.robot80_marker.setTransformOriginPoint(0, 0)
+        # Eagerly create the two competition robots so they appear at startup.
+        self._bot_state("Robot41")
+        self._bot_state("Robot80")
 
-        self.robot41_marker.setPos(0, 0)
-        self.robot80_marker.setPos(0, 0)
-        self.robot41_angle = 90
-        self.robot80_angle = 90
-        self.robot41_marker.setRotation(90)
-        self.robot80_marker.setRotation(90)
-        
-        self.tape_hits = []
-
-        # --- boundary trace + cliff map state (BMAP) ---
-        # All points stored in scene pixels (scenePos); fitting is scale-free.
-        self.boundary_segments = [[]]   # list of segments; each = [(x,y), ...]
-        self.corner_angles = []         # measured corner angles (deg) from SEARCH
-        self.cliffs = []                # hazard points (x,y)
-        self.pending_pt = None          # provisional crossing awaiting confirm
-        self.sweep_items = []           # QGraphics items of the latest SWEEPQ (cleared each sweep)
+        # Shared combined hazard layer (NOT per-robot — both robots contribute).
+        self.cliffs = []
 
     # ---------------- BMAP DRAW HELPERS ----------------
     def _draw_dot(self, x, y, color, faint=False):
@@ -357,32 +391,33 @@ class VenusDashboard(QMainWindow):
         self.findings_list.addItem(f"[MOUNTAIN] ~{int(size_cm)}cm @ ({round(cx/SCALE,1)}, {round(cy/SCALE,1)})cm")
 
     # ---------------- SWEEPQ OBJECT MARKERS ----------------
-    def _clear_sweep(self):
-        for it in self.sweep_items:
+    def _clear_sweep(self, st):
+        """Remove sweep markers for the given robot only."""
+        for it in st["sweep_items"]:
             try:
                 self.scene.removeItem(it)
             except Exception:
                 pass
-        self.sweep_items = []
+        st["sweep_items"] = []
 
-    def _draw_sweep_object(self, cx, cy, robot_center, dist_cm, angle_deg):
+    def _draw_sweep_object(self, cx, cy, robot_center, dist_cm, angle_deg, st):
         OBJ_GREEN = "#39FF14"
         # faint line from the robot to the object (direction)
         line = self.scene.addLine(robot_center.x(), robot_center.y(), cx, cy,
                                    QPen(QColor(57, 255, 20, 90), 1))
-        self.sweep_items.append(line)
+        st["sweep_items"].append(line)
         # object marker
         d = 2.2 * SCALE
         dot = self.scene.addEllipse(cx - d/2, cy - d/2, d, d,
                                     QPen(QColor("#FFFFFF"), 1), QBrush(QColor(OBJ_GREEN)))
         dot.setToolTip(f"Object\nDist: {round(dist_cm,1)} cm\nBearing: {round(angle_deg,1)}°")
-        self.sweep_items.append(dot)
+        st["sweep_items"].append(dot)
         # distance label
         label = self.scene.addText(f"{round(dist_cm,1)} cm")
         label.setDefaultTextColor(QColor(OBJ_GREEN))
         f = QFont(); f.setPointSizeF(7.0); label.setFont(f)
         label.setPos(cx + d/2, cy - d)
-        self.sweep_items.append(label)
+        st["sweep_items"].append(label)
         self.findings_list.addItem(
             f"[SWEEP] obj @ {round(angle_deg,1)}°, {round(dist_cm,1)}cm")
 
@@ -404,10 +439,10 @@ class VenusDashboard(QMainWindow):
         t = np.linalg.solve(A, np.array([c1[0]-c0[0], c1[1]-c0[1]], dtype=float))[0]
         return (c0[0] + t*d0[0], c0[1] + t*d0[1])
 
-    def fit_and_draw_boundary(self):
-        # Offline geometric fit, replacing the hardcoded-150cm draw_arena_boundary.
+    def fit_and_draw_boundary(self, st):
+        """Offline geometric fit for one robot's accumulated boundary segments."""
         try:
-            segs = [s for s in self.boundary_segments if len(s) >= 2]
+            segs = [s for s in st["boundary_segments"] if len(s) >= 2]
             if len(segs) < 2:
                 self.log_widget.append(
                     f"<span style='color:{RED_ALERT};'>[MAP] Not enough segments to fit ({len(segs)}).</span>")
@@ -437,11 +472,11 @@ class VenusDashboard(QMainWindow):
                 QBrush(QColor(255, 42, 42, 10)))
 
             # Cross-check: measured SEARCH corner angle vs angle between fitted dirs.
-            for i in range(min(len(self.corner_angles), n)):
+            for i in range(min(len(st["corner_angles"]), n)):
                 _, d0 = lines[i]
                 _, d1 = lines[(i + 1) % n]
                 fit_ang = math.degrees(math.acos(min(1.0, abs(float(np.dot(d0, d1))))))
-                meas = self.corner_angles[i]
+                meas = st["corner_angles"][i]
                 if min(abs(meas - fit_ang), abs(meas - (180.0 - fit_ang))) > 25.0:
                     self.log_widget.append(
                         f"<span style='color:{AMBER};'>[MAP] corner {i}: measured {meas:.0f}° "
@@ -454,9 +489,89 @@ class VenusDashboard(QMainWindow):
             self.log_widget.append(
                 f"<span style='color:#FF0000;'>[ERR] Boundary fit failed: {e}</span>")
 
-    def draw_arena_boundary(self):
+    # ============================================================
+    # F5 — black-contact classification (boundary loop vs interior cliff)
+    # All methods take st = self.bots[robot_name]; they CLUSTER per-robot
+    # (odometry drift differs per robot, so contacts must be grouped within
+    # one robot) and draw onto the SHARED self.cliffs hazard layer. Boundary
+    # segments feed the per-robot fit_and_draw_boundary(st) helper.
+    # ============================================================
+    BLACK_CLUSTER_GAP_CM   = 25.0   # contacts farther apart than this start a new cluster
+    BLACK_BOUNDARY_MIN_PTS = 4      # a cluster with >= this many points is a boundary run, not a patch
+    BLACK_BOUNDARY_MIN_RUN = 3      # ... OR any contact whose reported run reached this length
+
+    def _cluster_contacts(self, st):
+        # Greedy spatial clustering of this robot's black contacts (scene px).
+        # Returns list of clusters; each cluster = list of contact dicts.
+        # Contacts arrive in time order along the robot's path, so a simple
+        # "gap from the previous accepted point" split tracks a continuous trace
+        # and isolates lone patches. Per-robot only (st-scoped).
+        contacts = st.get("black_contacts", [])
+        if not contacts:
+            return []
+        gap_px = self.BLACK_CLUSTER_GAP_CM * SCALE
+        clusters = [[contacts[0]]]
+        for pt in contacts[1:]:
+            prev = clusters[-1][-1]
+            d = math.hypot(pt["x"] - prev["x"], pt["y"] - prev["y"])
+            # A reset run counter (run == 1) also forces a new cluster: the firmware
+            # cleared the run on intervening forward progress, so this is a fresh contact.
+            if d > gap_px or pt.get("run", 1) <= 1 and len(clusters[-1]) > 1:
+                clusters.append([pt])
+            else:
+                clusters[-1].append(pt)
+        return clusters
+
+    def _segment_boundary_loop(self, st, cluster):
+        # A continuous-run cluster = the robot followed the boundary tape. Append its
+        # points (as (x,y) tuples) to the per-robot boundary_segments as one new
+        # segment, then re-fit + redraw the boundary polygon via the existing TLS
+        # fitter so the boundary layer stays in sync.
+        seg = [(c["x"], c["y"]) for c in cluster]
+        if len(seg) < 2:
+            return False
+        if st["boundary_segments"] and not st["boundary_segments"][-1]:
+            st["boundary_segments"][-1] = seg          # fill the empty trailing segment
+        else:
+            st["boundary_segments"].append(seg)
+        st["boundary_segments"].append([])             # open a fresh trailing segment
+        return True
+
+    def classify_black_contacts(self, st):
+        # Run at EXPLORE_DONE for one robot. Cluster its contacts, then per cluster:
+        #   continuous run  -> boundary segment (polygon, per-robot fit)
+        #   lone patch      -> interior cliff (red X, shared self.cliffs)
         try:
-            p1, p2, p3 = self.tape_hits[0], self.tape_hits[1], self.tape_hits[2]
+            clusters = self._cluster_contacts(st)
+            if not clusters:
+                return
+            n_bound, n_cliff = 0, 0
+            for cl in clusters:
+                max_run = max((c.get("run", 1) for c in cl), default=1)
+                is_boundary = (len(cl) >= self.BLACK_BOUNDARY_MIN_PTS
+                               or max_run >= self.BLACK_BOUNDARY_MIN_RUN)
+                if is_boundary and self._segment_boundary_loop(st, cl):
+                    n_bound += 1
+                else:
+                    # lone patch -> interior cliff at the cluster centroid (shared layer)
+                    cx = sum(c["x"] for c in cl) / len(cl)
+                    cy = sum(c["y"] for c in cl) / len(cl)
+                    self.cliffs.append((cx, cy))
+                    self._draw_cliff(cx, cy)
+                    n_cliff += 1
+            if n_bound:
+                self.fit_and_draw_boundary(st)          # per-robot polygon re-fit
+            self.log_widget.append(
+                f"<span style='color:{AMBER};'>[MAP] black: "
+                f"{len(clusters)} cluster(s) -> {n_bound} boundary, {n_cliff} cliff.</span>")
+        except Exception as e:
+            self.log_widget.append(
+                f"<span style='color:{RED_ALERT};'>[ERR] classify_black_contacts: {e}</span>")
+
+    def draw_arena_boundary(self, st):
+        """Draw the legacy 3-hit boundary for the given robot's tape_hits."""
+        try:
+            p1, p2, p3 = st["tape_hits"][0], st["tape_hits"][1], st["tape_hits"][2]
             KNOWN_SIZE = 150 * SCALE
 
             dx, dy = p3[0] - p1[0], p3[1] - p1[1]
@@ -495,12 +610,9 @@ class VenusDashboard(QMainWindow):
             self.log_widget.append(f"<span style='color: #FF0000;'>[ERR] Boundary calc failed: {e}</span>")
 
     def rotate_robot(self, robot_name, delta):
-        if robot_name == "Robot41":
-            self.robot41_angle += delta
-            self.robot41_marker.setRotation(self.robot41_angle)
-        else:
-            self.robot80_angle += delta
-            self.robot80_marker.setRotation(self.robot80_angle)
+        st = self._bot_state(robot_name)
+        st["angle"] = (st["angle"] + delta) % 360
+        st["marker"].setRotation(st["angle"])
 
     # ---------------- MESSAGE HANDLER ----------------
     def handle_message(self, robot_name, text):
@@ -511,12 +623,9 @@ class VenusDashboard(QMainWindow):
         bot_color = CYAN if is_41 else MAGENTA
         self.log_widget.append(f"<span style='color: #4A5568;'>[{time_str}]</span> <span style='color: {bot_color}; font-weight: bold;'>[{robot_name}]</span> <span style='color: #E2E8F0;'>{text}</span>")
 
-        # Routing (Silent in the UI to prevent clutter, just do the math)
-        if robot_name == "Robot41": self.workerB.publish_message("/pynqbridge/80/recv", text)
-        elif robot_name == "Robot80": self.workerA.publish_message("/pynqbridge/41/recv", text)
-
         try:
-            target = self.robot41_marker if is_41 else self.robot80_marker
+            st = self._bot_state(robot_name)   # per-robot state dict
+            target = st["marker"]
             parts = text.strip().split(",")
             cmd = parts[0]
 
@@ -528,7 +637,7 @@ class VenusDashboard(QMainWindow):
                     total_dist_cm = dist_cm + SENSOR_OFFSET_CM
 
                     old_c = target.sceneBoundingRect().center()
-                    angle_deg = self.robot41_angle if is_41 else self.robot80_angle
+                    angle_deg = st["angle"]
                     angle_rad = math.radians(angle_deg)
 
                     mountain_x = old_c.x() + (total_dist_cm * SCALE * math.sin(angle_rad))
@@ -551,45 +660,45 @@ class VenusDashboard(QMainWindow):
                                       QPen(QColor("#FFFFFF"), 1), QBrush(QColor(255, 255, 255, 200)))
                 
                 real_x, real_y = tx / SCALE, ty / SCALE
-                self.tape_hits.append((real_x * SCALE, real_y * SCALE))
-                if len(self.tape_hits) == 3:
-                    self.draw_arena_boundary()
+                st["tape_hits"].append((real_x * SCALE, real_y * SCALE))
+                if len(st["tape_hits"]) == 3:
+                    self.draw_arena_boundary(st)
 
             # --- BMAP: provisional crossing (awaiting confirm) ---
             elif cmd == "PROV":
                 cur = target.scenePos()
-                self.pending_pt = (cur.x(), cur.y())
+                st["pending_pt"] = (cur.x(), cur.y())
                 self._draw_dot(cur.x(), cur.y(), AMBER, faint=True)
 
             # --- BMAP: confirmed boundary crossing(s) ---
             elif cmd == "BPT":
                 cur = target.scenePos()
-                seg = self.boundary_segments[-1]
-                if self.pending_pt is not None:                  # the original crossing
-                    seg.append(self.pending_pt)
-                    self._draw_dot(self.pending_pt[0], self.pending_pt[1], "#FFFFFF")
-                    self.pending_pt = None
-                seg.append((cur.x(), cur.y()))                   # the re-crossing
+                seg = st["boundary_segments"][-1]
+                if st["pending_pt"] is not None:                  # the original crossing
+                    seg.append(st["pending_pt"])
+                    self._draw_dot(st["pending_pt"][0], st["pending_pt"][1], "#FFFFFF")
+                    st["pending_pt"] = None
+                seg.append((cur.x(), cur.y()))                    # the re-crossing
                 self._draw_dot(cur.x(), cur.y(), "#FFFFFF")
 
             # --- BMAP: corner -> start a new segment ---
             elif cmd == "CORNER":
                 angle = float(parts[1]) if len(parts) > 1 else 0.0
-                self.corner_angles.append(angle)
-                if self.boundary_segments[-1]:                   # only split if non-empty
-                    self.boundary_segments.append([])
+                st["corner_angles"].append(angle)
+                if st["boundary_segments"][-1]:                  # only split if non-empty
+                    st["boundary_segments"].append([])
                 self.log_widget.append(
                     f"<span style='color:{AMBER};'>[MAP] CORNER ~{angle:.1f}°</span>")
 
             # --- BMAP: isolated cliff (hazard) ---
             elif cmd == "CLIFF":
-                if self.pending_pt is not None:
-                    pt = self.pending_pt
-                    self.pending_pt = None
+                if st["pending_pt"] is not None:
+                    pt = st["pending_pt"]
+                    st["pending_pt"] = None
                 else:
                     cur = target.scenePos()
                     pt = (cur.x(), cur.y())
-                self.cliffs.append(pt)
+                self.cliffs.append(pt)      # shared combined cliff layer
                 self._draw_cliff(pt[0], pt[1])
 
             # --- BMAP: line lost ---
@@ -599,7 +708,7 @@ class VenusDashboard(QMainWindow):
 
             # --- BMAP: trace done -> offline fit ---
             elif cmd == "BMAP_DONE":
-                self.fit_and_draw_boundary()
+                self.fit_and_draw_boundary(st)
 
             # --- TRUE ODOMETRY ---
             elif cmd == "ODOM":
@@ -612,11 +721,9 @@ class VenusDashboard(QMainWindow):
                 d_theta_deg = math.degrees(d_theta_rad)
 
                 old_pos = target.scenePos()
-                angle_deg = self.robot41_angle if is_41 else self.robot80_angle
+                angle_deg = st["angle"]
                 new_angle_deg = (angle_deg + d_theta_deg) % 360
-                
-                if is_41: self.robot41_angle = new_angle_deg
-                else: self.robot80_angle = new_angle_deg
+                st["angle"] = new_angle_deg
 
                 avg_angle_rad = math.radians(angle_deg + (d_theta_deg / 2))
                 dx = d_center * SCALE * math.sin(avg_angle_rad)
@@ -643,31 +750,26 @@ class VenusDashboard(QMainWindow):
 
             elif cmd == "ORT":
                 ort_zone = int(parts[1])
-                
-                # Check if the message has the new theta angle, otherwise default to 0
+
+                # theta = fine angle within the quadrant (0–90°, clockwise from the
+                # quadrant's base direction). Default 0 for older firmware.
                 theta = float(parts[2]) if len(parts) > 2 else 0.0
 
-                # Determine the base angle of the quadrant
+                # BUG-1 FIX: firmware defines ort 1=NORTH, 2=EAST, 3=SOUTH, 4=WEST.
+                # Map directly to scene degrees (0=up=North, 90=right=East, …).
+                # Old (wrong) map was {1:90, 2:180, 3:270, 4:0} (shifted by one quadrant).
                 base_angle = {
-                    1: 90,     # right / East
-                    2: 180,    # down / South
-                    3: 270,    # left / West
-                    4: 0       # up / North
+                    1: 0,      # NORTH — up in scene
+                    2: 90,     # EAST  — right in scene
+                    3: 180,    # SOUTH — down in scene
+                    4: 270,    # WEST  — left in scene
                 }.get(ort_zone, 0)
 
-                # Calculate absolute angle. 
-                # NOTE: If your robot turns right and the UI turns left, 
-                # just change (base_angle + theta) to (base_angle - theta)
                 absolute_angle = (base_angle + theta) % 360
+                st["angle"] = absolute_angle
 
-                if is_41:
-                    self.robot41_angle = absolute_angle
-                else:
-                    self.robot80_angle = absolute_angle
-
-                # Physically snap the UI robot to the new corrected heading
+                # Snap the UI robot to the corrected heading
                 target.setRotation(absolute_angle)
-                #self.update_direction_marker(robot_name)
 
             # =========================================
             # STEPS (Legacy Straight-Line Driving)
@@ -675,13 +777,8 @@ class VenusDashboard(QMainWindow):
             elif cmd == "STEPS":
                 steps = float(parts[1])
 
-                # Get the true center position
                 old_pos = target.scenePos()
-
-                if is_41:
-                    angle_deg = self.robot41_angle
-                else:
-                    angle_deg = self.robot80_angle
+                angle_deg = st["angle"]
 
                 angle = math.radians(angle_deg)
 
@@ -700,6 +797,43 @@ class VenusDashboard(QMainWindow):
 
                 label = self.pos_41_label if is_41 else self.pos_80_label
                 label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
+
+            # --- POSFIX: translation fix from re-sweep bearing/distance geometry (F4) ---
+            elif cmd == "POSFIX":
+                try:
+                    dx_mm = float(parts[1])   # rightward in robot-local frame (mm)
+                    dy_mm = float(parts[2])   # forward  in robot-local frame (mm)
+
+                    # F8's per-robot dict (applied before F4/F5) — IP-4
+                    st = self.bots[robot_name]
+                    angle_rad = math.radians(st["angle"])
+
+                    # Rotate robot-local (dx_right, dy_fwd) into scene coords.
+                    # Scene: x = right, y = DOWN; robot angle=0 means facing UP (North).
+                    # BUG-1 fixed: {1:0, 2:90, 3:180, 4:270} so angle=0 = North = up.
+                    # Forward (dy) in scene = (sin θ, −cos θ) (same as STEPS handler).
+                    # Right   (dx) in scene = (cos θ, +sin θ) (90° CW from forward).
+                    scene_dx = (dy_mm / 10.0 * SCALE) * math.sin(angle_rad) \
+                             + (dx_mm / 10.0 * SCALE) * math.cos(angle_rad)
+                    scene_dy = -(dy_mm / 10.0 * SCALE) * math.cos(angle_rad) \
+                             +  (dx_mm / 10.0 * SCALE) * math.sin(angle_rad)
+
+                    old_pos = st["marker"].scenePos()
+                    new_x   = old_pos.x() + scene_dx
+                    new_y   = old_pos.y() + scene_dy
+                    st["marker"].setPos(new_x, new_y)
+
+                    self.log_widget.append(
+                        f"<span style='color:{AMBER};'>"
+                        f"[POSFIX] {robot_name}: dx={int(dx_mm):+d} mm right, "
+                        f"dy={int(dy_mm):+d} mm fwd → "
+                        f"scene ({old_pos.x():.0f},{old_pos.y():.0f}) → "
+                        f"({new_x:.0f},{new_y:.0f})"
+                        f"</span>"
+                    )
+                except Exception as e:
+                    self.log_widget.append(
+                        f"<span style='color:{RED_ALERT};'>[ERR] POSFIX parse: {e}</span>")
 
             # --- ROCK/SAMPLE ---
             elif cmd == "ROCK":
@@ -731,15 +865,13 @@ class VenusDashboard(QMainWindow):
             elif cmd == "REGION":
                 radius_cm = float(parts[1]) if len(parts) > 1 else 40.0
                 c = target.scenePos()
-                angle_deg = self.robot41_angle if is_41 else self.robot80_angle
-                self._draw_explored_sector(c.x(), c.y(), angle_deg, radius_cm)
+                self._draw_explored_sector(c.x(), c.y(), st["angle"], radius_cm)
 
             # --- EXPLORE: mountain obstacle (placed ahead of the robot) ---
             elif cmd == "MOUNTAIN":
                 size_cm = float(parts[1]) if len(parts) > 1 else 30.0
                 c = target.scenePos()
-                angle_deg = self.robot41_angle if is_41 else self.robot80_angle
-                a = math.radians(angle_deg)
+                a = math.radians(st["angle"])
                 fwd = 15.0 * SCALE
                 self._draw_mountain(c.x() + fwd * math.sin(a),
                                     c.y() - fwd * math.cos(a), size_cm)
@@ -749,14 +881,26 @@ class VenusDashboard(QMainWindow):
                 c = target.scenePos()
                 self._draw_nogo_box(c.x(), c.y(), 10)
 
+            # --- F5: black contact report (paired with NOGO). Format: BLACKPT,<heading>,<run> ---
+            elif cmd == "BLACKPT":
+                heading = float(parts[1]) if len(parts) > 1 else st["angle"]
+                run     = int(parts[2])   if len(parts) > 2 else 1
+                c = target.scenePos()
+                st.setdefault("black_contacts", []).append(
+                    {"x": c.x(), "y": c.y(), "heading": heading, "run": run})
+                # provisional faint amber dot so the operator sees live contacts; the final
+                # boundary/cliff decision is drawn at EXPLORE_DONE.
+                self._draw_dot(c.x(), c.y(), AMBER, faint=True)
+
             # --- EXPLORE: run finished ---
             elif cmd == "EXPLORE_DONE":
+                self.classify_black_contacts(st)   # F5: cluster + draw
                 self.log_widget.append(
                     f"<span style='color:{CYAN};'>[EXPLORE] mapping run complete.</span>")
 
             # --- SWEEPQ: start of a new object list -> clear the previous sweep markers ---
             elif cmd == "OBJN":
-                self._clear_sweep()
+                self._clear_sweep(st)
                 n = int(parts[1]) if len(parts) > 1 else 0
                 self.log_widget.append(
                     f"<span style='color:#39FF14;'>[SWEEP] {n} object(s)</span>")
@@ -766,12 +910,12 @@ class VenusDashboard(QMainWindow):
                 rel = float(parts[1])
                 dist_mm = float(parts[2])
                 c = target.sceneBoundingRect().center()
-                angle_deg = (self.robot41_angle if is_41 else self.robot80_angle) + rel
+                angle_deg = st["angle"] + rel
                 angle_rad = math.radians(angle_deg)
                 total_cm = dist_mm / 10.0 + SENSOR_OFFSET_CM
                 ox = c.x() + total_cm * SCALE * math.sin(angle_rad)
                 oy = c.y() - total_cm * SCALE * math.cos(angle_rad)
-                self._draw_sweep_object(ox, oy, c, total_cm, angle_deg)
+                self._draw_sweep_object(ox, oy, c, total_cm, angle_deg, st)
 
             # --- standalone temperature reading ---
             elif cmd == "TEMP":

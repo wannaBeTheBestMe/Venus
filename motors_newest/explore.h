@@ -44,6 +44,21 @@
 #define SWEEP_SEG_CONFIRM     3       // sustained off-band steps that split into a new distance level
 #define EXP_OH_SAMPLES        10      // overhead readings used to classify an object
 #define EXP_OH_MAX_ATTEMPTS   40      // cap on overhead read attempts (sensor-stuck timeout)
+#define EXP_RESWEEP_MATCH_DEG 12.0f   // max bearing diff to pair a re-swept rock with an original
+#define EXP_RESWEEP_MATCH_MM  80      // max distance diff to confirm that pairing
+#define EXP_RESWEEP_MIN_REFS  2       // matched rocks needed to trust a heading-drift correction
+
+// ---- F3: trap / corner escape ----
+#define EXP_TRAP_HAZ_LIMIT    3      // consecutive hazards w/o net progress -> "stuck", escape
+#define EXP_TRAP_SCAN_DEG     180    // total in-place scan arc (+/- 90 deg about the heading)
+#define EXP_TRAP_SCAN_STEP    10.0f  // coarse scan increment (deg) -- fast, just locating openness
+#define EXP_TRAP_OPEN_MM      300    // a heading counts as "open" only if forward range >= this
+#define EXP_TRAP_COMMIT_MM    450    // longer clear move committed to break out (> the 300 mm hop)
+#define EXP_TRAP_MAX_TRIES    3      // escape attempts before giving up (stop + log) -- bounded
+
+// ---- F4: POSFIX translation estimation ----
+#define EXP_POSFIX_MIN_SPAN_DEG  20.0f   // min bearing spread (deg) to avoid collinear degeneracy
+#define EXP_DEG2RAD              0.01745329f  // pi/180; avoids importing full math header just for this
 
 // advance_monitored / approach_object return codes
 #define ADV_DONE      0
@@ -261,6 +276,11 @@ static int final_nudge(void)
 // Global cliff-stop helpers for manual forward commands (poll the monitor's flag).
 static int stop_black_or_S(void) { return g_black || stop_on_uart_S(); }
 static void g_black_ack(void) { g_black = 0; }   // re-arm after handling a black halt
+// F5: count of CONSECUTIVE black contacts with no intervening forward progress. Distinct from
+// g_haz_streak (which also counts mountains) — g_black_run is a BLACK-ONLY continuation hint the
+// UI uses to tell a boundary loop (long continuous run) from a lone interior cliff patch (run==1).
+// Declared here (ahead of handle_black) so handle_black can increment it.
+static int g_black_run = 0;
 
 // ------------------------------------------------------
 // Approach the object the robot is currently facing, stopping ~50 mm away.
@@ -446,7 +466,13 @@ static void handle_black(orientation_t *ori)
                                              // reverse below is queued behind them and the robot
                                              // rolls further onto the cliff before backing off.
     exp_mon_stop();                          // pause monitor while we clear the edge
-    send_message("NOGO");                    // UI logs a 10x10 cm no-go box at current pose
+    send_message("NOGO");                    // UI logs a 10x10 cm no-go box at current pose (UNCHANGED)
+    g_black_run++;                           // F5: extend the current black-contact run
+    {
+        char bm[48];
+        snprintf(bm, sizeof bm, "BLACKPT,%.1f,%d", get_heading(ori), g_black_run);
+        send_message(bm);                    // F5: per-contact report alongside NOGO (additive)
+    }
     send_orientation(ori);
 
     move_forward(-2 * MOVE_UNIT, SPEED_ULTRA_SLOW);  // back straight off (known-safe direction)
@@ -478,12 +504,302 @@ static void avoid_mountain(orientation_t *ori)
 }
 
 // ------------------------------------------------------
+// F3: trap / corner escape.
+// ------------------------------------------------------
+// Consecutive hazards (cliff/mountain) without net forward progress = the robot is
+// ping-ponging in a corner or boxed in. We count them; at EXP_TRAP_HAZ_LIMIT we run a
+// deliberate escape instead of letting handle_black/avoid_mountain oscillate forever.
+static int g_haz_streak = 0;                 // F3 trap detector (reset on real forward progress)
+// (g_black_run is declared earlier, just after g_black_ack, so handle_black can use it.)
+
+static void haz_note(void)  { g_haz_streak++; }
+static void haz_reset(void) { g_haz_streak = 0; }
+static int  haz_stuck(void) { return g_haz_streak >= EXP_TRAP_HAZ_LIMIT; }
+
+// Bounded in-place scan for the most-open heading. Pivots up to EXP_TRAP_SCAN_DEG/2 to EACH
+// side of the current heading, returning to centre between halves so the body never circles
+// PAST an unknown black streak (cliff-safety: same rule as handle_black's "never circle to the
+// far side"). Samples the forward range at each step and keeps the heading with the largest
+// free range (out-of-range = fully open) that clears EXP_TRAP_OPEN_MM and is not a near
+// obstacle. Cliff-safe: if the monitor trips mid-pivot, that side is abandoned and the pivot
+// reversed back over the arc we just traversed (known-safe) rather than continued onto the tape.
+// Returns 1 and sets *best_rel (signed deg, + = CW) on success; 0 if no opening was found.
+static int escape_scan(orientation_t *ori, float *best_rel)
+{
+    g_sweep_residual = 0.0f;                  // independent run: no carry from a prior sweep
+    read_distance_forward_raw();              // prime the sensor
+    g_black = 0;                              // clear a stale latch; monitor re-asserts a real cliff
+
+    int   half      = EXP_TRAP_SCAN_DEG / 2;
+    int   found     = 0;
+    long  best_open = -1;
+    float best      = 0.0f;
+
+    // straight ahead (rel 0)
+    {
+        int32_t d    = read_distance_forward_raw();
+        long    open = (d < 0) ? (long)MAX_RANGE_MM + 1 : (long)d;
+        if (open >= EXP_TRAP_OPEN_MM) { best_open = open; best = 0.0f; found = 1; }
+    }
+
+    for (int side = 0; side < 2; side++)
+    {
+        float dir = (side == 0) ? +EXP_TRAP_SCAN_STEP : -EXP_TRAP_SCAN_STEP;  // CW then CCW
+        float acc = 0.0f;
+
+        for (float a = EXP_TRAP_SCAN_STEP; a <= (float)half + 0.01f; a += EXP_TRAP_SCAN_STEP)
+        {
+            int chk = exp_check();
+            if (chk == 2) break;                       // operator stop
+            if (chk == 1) { g_black = 0; break; }      // cliff this way -> abandon this side
+
+            sweep_rotate(ori, dir);                    // blocking pivot one step (settles, tracks ori)
+            acc += dir;
+
+            if (g_black) { g_black = 0; break; }        // sensor saw tape now-ahead -> blocked
+
+            int32_t d           = read_distance_forward_raw();
+            long    open        = (d < 0) ? (long)MAX_RANGE_MM + 1 : (long)d;
+            int     near_obst   = (d > 0 && d < EXP_MOUNTAIN_NEAR_MM);
+            if (!near_obst && open >= EXP_TRAP_OPEN_MM && open > best_open)
+            { best_open = open; best = acc; found = 1; }
+        }
+
+        sweep_rotate(ori, -acc);                       // back to centre heading before the other half
+    }
+
+    *best_rel = best;
+    return found;
+}
+
+// Run the escape: scan for an opening, rotate to it, commit a longer monitored move to break
+// out. Cliff-safe and bounded (EXP_TRAP_MAX_TRIES, then stop + log). Resets the hazard streak on
+// success. Returns ADV_DONE on escape, ADV_STOP on operator-stop or give-up.
+static int escape_trap(orientation_t *ori)
+{
+    send_message("TRAP");                     // UI: trap detected, attempting escape
+    send_orientation(ori);
+    log_msg("TRAP: boxed in (haz streak=%d) - escaping", g_haz_streak);
+
+    for (int attempt = 0; attempt < EXP_TRAP_MAX_TRIES; attempt++)
+    {
+        if (g_stop) return ADV_STOP;
+
+        float best_rel = 0.0f;
+        if (!escape_scan(ori, &best_rel))
+        {
+            // No opening visible from here. Back straight off (known-safe; reverse is never
+            // cliff-gated, matching handle_black recovery) and re-scan from a new vantage.
+            if (g_stop) return ADV_STOP;
+            log_msg("TRAP: no opening (attempt %d) - backing off", attempt + 1);
+            move_forward(-2 * MOVE_UNIT, SPEED_ULTRA_SLOW);
+            wait_motion(1200);
+            continue;
+        }
+
+        log_msg("TRAP: opening at rel=%.1f - committing", best_rel);
+        exp_rotate_deg(ori, best_rel);
+        send_orientation(ori);
+
+        int moved = 0;
+        int r = advance_monitored(ori, EXP_TRAP_COMMIT_MM, &moved);
+        if (r == ADV_STOP) return ADV_STOP;
+
+        if (r == ADV_DONE && moved > 0)
+        {
+            log_msg("TRAP: escaped (%d units)", moved);
+            haz_reset();
+            send_message("TRAP_OK");
+            return ADV_DONE;
+        }
+
+        // Hit a hazard while committing -> clear it (cliff-safe handlers) and try once more.
+        if      (r == ADV_BLACK)    handle_black(ori);
+        else if (r == ADV_MOUNTAIN) avoid_mountain(ori);
+    }
+
+    log_msg("TRAP: escape failed after %d tries - stopping", EXP_TRAP_MAX_TRIES);
+    send_message("TRAP_FAIL");
+    g_stop = 1;                               // bounded: never spin forever
+    return ADV_STOP;
+}
+
+// One monitored hop with hazard handling + F3 trap detection. Returns 1 to keep exploring,
+// 0 to stop the loop (operator S or trap give-up). Used for both advance sites in run_explore.
+static int advance_with_escape(orientation_t *ori)
+{
+    int moved = 0;
+    int r = advance_monitored(ori, EXP_ADVANCE_MM, &moved);
+
+    if (r == ADV_STOP) return 0;
+    if (r == ADV_DONE) { if (moved > 0) { haz_reset(); g_black_run = 0; } return 1; }  // net progress -> not stuck; F5: break the black run too
+
+    if (r == ADV_BLACK)    handle_black(ori);
+    else                   avoid_mountain(ori);                   // ADV_MOUNTAIN
+    haz_note();
+
+    if (haz_stuck() && escape_trap(ori) == ADV_STOP) return 0;
+    return 1;
+}
+
+// ------------------------------------------------------
+// Re-sweep loop-closure (drift correction between objects).
+// After return_to_origin, sweep again and match the still-present rocks against the IMMUTABLE
+// original sweep `objs0` (true-origin frame). The robust median bearing offset is the accumulated
+// angular drift: apply -drift to `ori` so heading/UI stay truthful and the next return_to_origin
+// physically re-centres (closed loop, no runaway -- return_to_origin resets ori to origin each cycle
+// and this re-corrects it to truth). Separately refresh the NOT-yet-visited working objects from the
+// new sweep so the next approach aims where the rock actually is now (robust to rotation AND small
+// position drift). `report` also emits DRIFT/DOBJ diagnostics (the RSC test command).
+// Returns ADV_DONE / ADV_BLACK / ADV_STOP (mirrors the in-loop sweep_collect convention).
+// ------------------------------------------------------
+static float exp_median(float *a, int len)
+{
+    for (int i = 1; i < len; i++)            // insertion sort (len <= EXP_MAX_OBJ)
+    {
+        float v = a[i]; int j = i - 1;
+        while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; }
+        a[j + 1] = v;
+    }
+    return (len & 1) ? a[len / 2] : 0.5f * (a[len / 2 - 1] + a[len / 2]);
+}
+
+static int resweep_correct(orientation_t *ori, exp_obj_t *objs, const exp_obj_t *objs0,
+                           int n, int visited_k, int report)
+{
+    exp_obj_t robjs[EXP_MAX_OBJ];
+    int rn = sweep_collect(ori, robjs, EXP_MAX_OBJ);
+    if (rn == -2) return ADV_BLACK;
+    if (rn == -3) return ADV_STOP;
+
+    // greedy one-to-one match: each original rock -> nearest-in-bearing re-swept rock, gated by
+    // EXP_RESWEEP_MATCH_DEG and validated by EXP_RESWEEP_MATCH_MM (the distance gate disambiguates
+    // two rocks that fall within the bearing tolerance of each other).
+    int   rused[EXP_MAX_OBJ];
+    int   match_of[EXP_MAX_OBJ];             // re-swept index paired with original i, or -1
+    float deltas[EXP_MAX_OBJ];
+    int   nd = 0;
+    for (int r = 0; r < rn; r++) rused[r] = 0;
+    for (int i = 0; i < n; i++)
+    {
+        int   best = -1;
+        float bestab = EXP_RESWEEP_MATCH_DEG;
+        for (int r = 0; r < rn; r++)
+        {
+            if (rused[r]) continue;
+            float db = robjs[r].rel_deg - objs0[i].rel_deg;
+            float ab = db < 0 ? -db : db;
+            long  dd = labs((long)robjs[r].dist_mm - (long)objs0[i].dist_mm);
+            if (ab <= bestab && dd <= EXP_RESWEEP_MATCH_MM) { best = r; bestab = ab; }
+        }
+        match_of[i] = best;
+        if (best >= 0) { rused[best] = 1; deltas[nd++] = robjs[best].rel_deg - objs0[i].rel_deg; }
+    }
+
+    // (a) heading/UI correction from the robust drift estimate (needs >= MIN_REFS references)
+    float drift = 0.0f;
+    if (nd >= EXP_RESWEEP_MIN_REFS)
+    {
+        float tmp[EXP_MAX_OBJ];
+        for (int i = 0; i < nd; i++) tmp[i] = deltas[i];
+        drift = exp_median(tmp, nd);         // measured offset = -e (drift since region start)
+        rotate_orientation(ori, -drift);     // make ori truthful (true heading = ori + e)
+        log_msg("RESWEEP: matched=%d drift=%.1f", nd, drift);
+        send_orientation(ori);
+    }
+    else
+        log_msg("RESWEEP: matched=%d (<%d) - no heading correction", nd, EXP_RESWEEP_MIN_REFS);
+
+    // (b) F4: translation estimation — least-squares mean of per-pair displacement vectors
+    // Requires >= EXP_RESWEEP_MIN_REFS matched pairs AND non-collinear geometry (bearing
+    // spread >= EXP_POSFIX_MIN_SPAN_DEG). If degenerate, log and skip rather than emit
+    // a bogus fix. dx = rightward mm, dy = forward mm (robot-local frame).
+    int   posfix_ok = 0;
+    float posfix_dx = 0.0f, posfix_dy = 0.0f;
+    if (nd >= EXP_RESWEEP_MIN_REFS)
+    {
+        // Collect bearing span across all matched originals to test collinearity.
+        float bear_min = 999.0f, bear_max = -999.0f;
+        float sum_dx   = 0.0f,   sum_dy  = 0.0f;
+        int   cnt      = 0;
+
+        for (int i = 0; i < n; i++)
+        {
+            if (match_of[i] < 0) continue;
+            float ai = objs0[i].rel_deg   * EXP_DEG2RAD;  // initial bearing (rad)
+            float bi = robjs[match_of[i]].rel_deg * EXP_DEG2RAD;  // re-swept bearing (rad)
+            float ri = (float)objs0[i].dist_mm;
+            float si = (float)robjs[match_of[i]].dist_mm;
+
+            // Cartesian displacement this pair observes (robot-local: x=right, y=fwd)
+            sum_dx += si * sinf(bi) - ri * sinf(ai);
+            sum_dy += si * cosf(bi) - ri * cosf(ai);
+            cnt++;
+
+            float bear = objs0[i].rel_deg;
+            if (bear < bear_min) bear_min = bear;
+            if (bear > bear_max) bear_max = bear;
+        }
+
+        float span = bear_max - bear_min;
+        if (span < EXP_POSFIX_MIN_SPAN_DEG)
+        {
+            log_msg("POSFIX unobservable, skipped (bearing span=%.1f deg < %.1f)", span, EXP_POSFIX_MIN_SPAN_DEG);
+        }
+        else
+        {
+            posfix_dx = sum_dx / (float)cnt;
+            posfix_dy = sum_dy / (float)cnt;
+            posfix_ok = 1;
+            log_msg("POSFIX: dx=%.0f dy=%.0f mm (n=%d span=%.1f)", posfix_dx, posfix_dy, cnt, span);
+        }
+    }
+
+    if (report)
+    {
+        char m[64];
+        sprintf(m, "DRIFT,%.1f,%d", drift, nd);
+        send_message(m);
+        for (int i = 0; i < n; i++)
+            if (match_of[i] >= 0)
+            {
+                sprintf(m, "DOBJ,%.1f,%.1f,%.1f", objs0[i].rel_deg, robjs[match_of[i]].rel_deg,
+                        robjs[match_of[i]].rel_deg - objs0[i].rel_deg);
+                send_message(m);
+            }
+        // F4: emit translation fix if geometry was non-degenerate
+        if (posfix_ok)
+        {
+            sprintf(m, "POSFIX,%d,%d", (int)posfix_dx, (int)posfix_dy);
+            send_message(m);
+        }
+    }
+
+    // (b) re-acquire: refresh the not-yet-visited working objects from the new sweep (current-centre
+    // bearings), so the next approach aims where the rock is now. Unmatched -> keep stale, log it.
+    for (int i = visited_k + 1; i < n; i++)
+    {
+        if (match_of[i] >= 0)
+        {
+            objs[i].rel_deg = robjs[match_of[i]].rel_deg;
+            objs[i].dist_mm = robjs[match_of[i]].dist_mm;
+        }
+        else
+            log_msg("RESWEEP: obj %d unmatched, keeping stale bearing %.1f", i, objs[i].rel_deg);
+    }
+
+    return ADV_DONE;
+}
+
+// ------------------------------------------------------
 // Top-level explore loop (the EXPLORE command).
 // ------------------------------------------------------
 static void run_explore(orientation_t *ori, Cal *cal)
 {
     log_msg("EXPLORE: start");
     g_stop = 0;
+    haz_reset();                  // F3: start each EXPLORE with a clean hazard streak
+    g_black_run = 0;              // F5: start each EXPLORE with a clean black-contact run
     exp_mon_start();
 
     while (!g_stop)
@@ -492,7 +808,11 @@ static void run_explore(orientation_t *ori, Cal *cal)
         exp_obj_t  objs[EXP_MAX_OBJ];
         int        n = sweep_collect(ori, objs, EXP_MAX_OBJ);
 
-        if (n == -2) { handle_black(ori); continue; }   // black during sweep
+        if (n == -2) {                                  // black during sweep
+            handle_black(ori); haz_note();
+            if (haz_stuck() && escape_trap(ori) == ADV_STOP) break;
+            continue;
+        }
         if (n == -3) break;                             // operator stop
 
         char rm[48];
@@ -502,12 +822,13 @@ static void run_explore(orientation_t *ori, Cal *cal)
 
         if (n == 0)
         {
-            int moved = 0, r = advance_monitored(ori, EXP_ADVANCE_MM, &moved);
-            if      (r == ADV_BLACK)    handle_black(ori);
-            else if (r == ADV_STOP)     break;
-            else if (r == ADV_MOUNTAIN) avoid_mountain(ori);
+            if (!advance_with_escape(ori)) break;   // F3: hop + trap detection
             continue;
         }
+
+        // immutable copy of the first sweep (true-origin frame) for drift estimation each hop
+        exp_obj_t objs0[EXP_MAX_OBJ];
+        for (int i = 0; i < n; i++) objs0[i] = objs[i];
 
         for (int k = 0; k < n && !g_stop; k++)
         {
@@ -515,7 +836,7 @@ static void run_explore(orientation_t *ori, Cal *cal)
 
             int moved = 0, r = approach_object(ori, &moved);
             if (r == ADV_STOP) break;
-            if (r == ADV_BLACK) { handle_black(ori); return_to_origin(ori, origin_heading, moved); continue; }
+            if (r == ADV_BLACK) { handle_black(ori); haz_note(); return_to_origin(ori, origin_heading, moved); continue; }
 
             enum e_rock_color col = NONE;
             float temp = TEMP_INVALID;
@@ -537,15 +858,17 @@ static void run_explore(orientation_t *ori, Cal *cal)
             }
 
             return_to_origin(ori, origin_heading, moved);
-            if (g_black) handle_black(ori);
+            if (g_black) { handle_black(ori); haz_note(); continue; }
+
+            // re-sweep loop-closure: re-acquire the remaining targets + correct heading drift
+            int rc = resweep_correct(ori, objs, objs0, n, k, 0);
+            if      (rc == ADV_STOP)  break;
+            else if (rc == ADV_BLACK) { handle_black(ori); haz_note(); }
         }
 
         if (!g_stop)
         {
-            int moved = 0, r = advance_monitored(ori, EXP_ADVANCE_MM, &moved);
-            if      (r == ADV_BLACK)    handle_black(ori);
-            else if (r == ADV_STOP)     break;
-            else if (r == ADV_MOUNTAIN) avoid_mountain(ori);
+            if (!advance_with_escape(ori)) break;   // F3: hop + trap detection
         }
     }
 
