@@ -473,6 +473,13 @@ static const char *rock_color_str(enum e_rock_color c)
     }
 }
 
+// Emit ONLY the cliff "no-go" UI marker (the same red 10x10 box handle_black draws,
+// at the marker's current pose) WITHOUT any recovery motion. For test/diagnostic
+// commands that halt on black but must not auto-back-off: gives the operator the
+// same NOGO box the mission shows. Pure UI (one send_message) — no g_black change,
+// no motion, so it cannot affect the cliff-stop / no-false-negative behaviour.
+static void report_nogo(void) { send_message("NOGO"); }
+
 // ------------------------------------------------------
 // Hazard handlers.
 // ------------------------------------------------------

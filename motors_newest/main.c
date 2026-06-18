@@ -233,6 +233,8 @@ int main(void)
                         if (g_black)
                         {
                             log_msg("BLACK DETECTED");
+                            { char stp[64]; sprintf(stp, "STEPS,%ld", count); send_message(stp); }
+                            report_nogo();   // UI: red cliff box at the halt pose
                             print_orientation(&ori);
                             send_orientation(&ori);
                             g_black_ack();
@@ -258,6 +260,7 @@ int main(void)
                 int r = approach_object(&ori, &moved);
                 if (r == ADV_BLACK) { log_msg("FB: aborted - black/cliff"); g_black_ack(); }
                 { char stp[64]; sprintf(stp, "STEPS,%d", moved); send_message(stp); }
+                if (r == ADV_BLACK) report_nogo();   // UI: cliff box at the halt pose (after STEPS)
                 print_orientation(&ori);
                 send_orientation(&ori);
              }
@@ -278,7 +281,7 @@ int main(void)
                     if (x > 0)
                     {
                         mv_stop = move_batch_until(x * MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
-                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
+                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); report_nogo(); g_black_ack(); }
                     }
 
                     if (x < 0)
@@ -296,7 +299,7 @@ int main(void)
                         send_orientation(&ori);
 
                         mv_stop = move_batch_until((-x) * MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
-                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
+                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); report_nogo(); g_black_ack(); }
                     }
 
                     if (!mv_stop && y > 0)
@@ -333,7 +336,7 @@ int main(void)
                     if (!mv_stop && y != 0)
                     {
                         mv_stop = move_batch_until(y * MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
-                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
+                        if (mv_stop && g_black) { log_msg("BLACK DETECTED"); report_nogo(); g_black_ack(); }
                     }
 
                     log_msg("MOVE COMPLETE");
@@ -369,7 +372,7 @@ int main(void)
             {
                 if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S))
                 {
-                    if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
+                    if (g_black) { log_msg("BLACK DETECTED"); report_nogo(); g_black_ack(); }
                     send_orientation(&ori);
                 }
                 else
@@ -390,7 +393,7 @@ int main(void)
             {
                 if (move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S))
                 {
-                    if (g_black) { log_msg("BLACK DETECTED"); g_black_ack(); }
+                    if (g_black) { log_msg("BLACK DETECTED"); report_nogo(); g_black_ack(); }
                     send_orientation(&ori);
                 }
                 else
@@ -414,6 +417,7 @@ int main(void)
                 int mon_was_on = g_mon_run;
                 exp_mon_stop();
 
+                int sb_count = 0;   // MOVE_UNIT batches advanced (to place the marker at the halt)
                 while(1)
                 {
                     // move_batch_until halts the instant black appears mid-batch.
@@ -422,10 +426,13 @@ int main(void)
                     {
                         stepper_halt();
                         log_msg("BLACK DETECTED");
+                        { char stp[64]; sprintf(stp, "STEPS,%d", sb_count); send_message(stp); }
+                        report_nogo();   // UI: red cliff box at the halt pose
                         print_orientation(&ori);
                         send_orientation(&ori);
                         break;
                     }
+                    sb_count++;
                 }
 
                 if (mon_was_on) exp_mon_start();
@@ -555,7 +562,7 @@ int main(void)
                 int r = approach_object(&ori, &moved);
                 if (r != ADV_DONE)
                 {
-                    if (r == ADV_BLACK) { log_msg("O: aborted - black/cliff"); g_black_ack(); }
+                    if (r == ADV_BLACK) { log_msg("O: aborted - black/cliff"); { char stp[64]; sprintf(stp, "STEPS,%d", moved); send_message(stp); } report_nogo(); g_black_ack(); }
                     else if (r == ADV_STOP) log_msg("O: aborted - stop");
                     send_orientation(&ori);
                     continue;
@@ -617,7 +624,7 @@ int main(void)
             int cycles = 5; // default
             sscanf(MSG, "SHL,%d", &cycles);
 
-            if (shuffle_sideways(&ori, cycles, true)) g_black_ack();  // clear cliff latch if the strafe aborted on black
+            if (shuffle_sideways(&ori, cycles, true)) { report_nogo(); g_black_ack(); }  // UI cliff box + clear latch if the strafe aborted on black
 
             print_orientation(&ori);
             send_orientation(&ori);
@@ -631,7 +638,7 @@ int main(void)
             int cycles = 5; // default
             sscanf(MSG, "SHR,%d", &cycles);
 
-            if (shuffle_sideways(&ori, cycles, false)) g_black_ack();  // clear cliff latch if the strafe aborted on black
+            if (shuffle_sideways(&ori, cycles, false)) { report_nogo(); g_black_ack(); }  // UI cliff box + clear latch if the strafe aborted on black
 
             print_orientation(&ori);
             send_orientation(&ori);
@@ -776,7 +783,12 @@ int main(void)
                 }
                 else { log_msg("classify error (%d) - object skipped", size); }
             }
-            else if (r == ADV_BLACK) log_msg("EXP1: aborted - black/cliff (recalibrate / move off tape)");
+            else if (r == ADV_BLACK)
+            {
+                log_msg("EXP1: aborted - black/cliff (recalibrate / move off tape)");
+                { char stp[64]; sprintf(stp, "STEPS,%d", moved); send_message(stp); }
+                report_nogo();   // UI: red cliff box at the halt pose
+            }
             else if (r == ADV_STOP)  log_msg("EXP1: aborted - stop");
             send_orientation(&ori);
         }
@@ -802,7 +814,12 @@ int main(void)
             char m[48];
             sprintf(m, "ADVR,%d,%d", r, moved);
             send_message(m);
-            if (r == ADV_BLACK) log_msg("ADV: aborted - black/cliff (recalibrate / move off tape)");
+            if (r == ADV_BLACK)
+            {
+                log_msg("ADV: aborted - black/cliff (recalibrate / move off tape)");
+                { char stp[64]; sprintf(stp, "STEPS,%d", moved); send_message(stp); }
+                report_nogo();   // UI: red cliff box at the halt pose
+            }
             else if (r == ADV_STOP) log_msg("ADV: aborted - stop");
             send_orientation(&ori);
         }
@@ -832,7 +849,7 @@ int main(void)
         {
             g_black_ack();                 // slow tiny move; clear stale cliff latch (monitor re-asserts)
             int hit = final_nudge();
-            if (hit) log_msg("NUDGE: halted on black/cliff");
+            if (hit) { log_msg("NUDGE: halted on black/cliff"); report_nogo(); }   // UI: cliff box (~5 mm move, pose ~current)
             else     log_msg("NUDGE: done (~%d mm)", EXP_FINAL_NUDGE_MM);
             send_orientation(&ori);
         }

@@ -258,7 +258,10 @@ Live contacts show as faint amber dots as they arrive.
 systematic error, fixed in F8) ·
 `REGION,radius_cm` ·
 `OBJN,n` then `OBJ,rel_deg,dist_mm` (swept objects) · `FOUND_ROCK,size,color[,temp]` ·
-`MOUNTAIN,size_cm` · `NOGO` (10×10 cm cliff box) ·
+`MOUNTAIN,size_cm` · `NOGO` (10×10 cm cliff box — emitted by `handle_black` in the mission AND by the
+test/diagnostic commands `F`/`FB`/`MOVE`/`R`/`L`/`O`/`SHL`/`SHR`/`STOPBLACK`/`EXP1`/`ADV`/`NUDGE` when
+they halt on black, via the pure-UI helper `report_nogo`, so the operator sees the cliff regardless of
+which command tripped it) ·
 `BLACKPT,heading,run` (F5; per black contact, paired with `NOGO`, additive — heading in deg,
 run = consecutive-black count) ·
 `POSFIX,dx_mm,dy_mm` (F4 translation fix; dx=right, dy=fwd, mm, ints; non-collinear rocks only) ·
