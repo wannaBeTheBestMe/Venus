@@ -37,6 +37,13 @@ SENSOR_OFFSET_CM = 6.0
 WHEEL_RADIUS_CM = 3.13
 STEPS_PER_REV   = 1600                                  # manual sec 4.3
 CM_PER_STEP     = 2 * math.pi * WHEEL_RADIUS_CM / STEPS_PER_REV   # ~0.0123
+# Firmware STEPS messages carry a MOVE_UNIT *chunk count* (advance_monitored /
+# move_batch_until count their hops), NOT centimetres. One chunk = MOVE_UNIT
+# steps, so the physical distance per chunk is MOVE_UNIT * CM_PER_STEP. The STEPS
+# handler MUST scale by this (earlier it treated the chunk count as cm directly,
+# so the marker advanced ~6x too little for the real distance driven).
+MOVE_UNIT       = 500                                   # firmware MOVE_UNIT (main_header.h)
+CM_PER_UNIT     = MOVE_UNIT * CM_PER_STEP               # ~6.15 cm physical per STEPS chunk
 WHEEL_BASE_CM   = 12.5     # center-to-center; used for heading integration
 
 # --- NEON COLOR PALETTE ---
@@ -778,16 +785,17 @@ class VenusDashboard(QMainWindow):
             # STEPS (Legacy Straight-Line Driving)
             # =========================================
             elif cmd == "STEPS":
-                steps = float(parts[1])
+                units = float(parts[1])           # MOVE_UNIT chunk count (signed), NOT cm
+                dist_cm = units * CM_PER_UNIT      # chunks -> physical centimetres
 
                 old_pos = target.scenePos()
                 angle_deg = st["angle"]
 
                 angle = math.radians(angle_deg)
 
-                # Calculate movement vector
-                dx = steps * SCALE * math.sin(angle)
-                dy = -steps * SCALE * math.cos(angle)
+                # Calculate movement vector (cm -> scene pixels via SCALE)
+                dx = dist_cm * SCALE * math.sin(angle)
+                dy = -dist_cm * SCALE * math.cos(angle)
 
                 nx = old_pos.x() + dx
                 ny = old_pos.y() + dy

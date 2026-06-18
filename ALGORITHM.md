@@ -62,8 +62,9 @@ a mapping/visualization layer.
   returns to origin, and reported bearings match the physical heading.
 - **Orientation** (`orientation_t`): quadrant `ort` (1=N,2=E,3=S,4=W) + `theta` (0–90°);
   `get_heading = (ort−1)·90 + theta`. Firmware updates it on *deliberate* turns; the UI keeps live
-  (x,y,heading) by integrating `STEPS`/`ORT` (`STEPS,n` = forward displacement in steps, converted
-  via `CM_PER_STEP`; `ORT,ort,theta` = heading snaps).
+  (x,y,heading) by integrating `STEPS`/`ORT` (`STEPS,n` = forward displacement as a **`MOVE_UNIT`
+  chunk count**, converted in the UI via `CM_PER_UNIT = MOVE_UNIT·CM_PER_STEP` ≈ 6.15 cm/chunk —
+  NOT raw steps; `ORT,ort,theta` = heading snaps).
 - **Black calibration** (`CALBLACK`): operator shows the **white floor** then **black tape**;
   firmware stores clear-channel min/max, **persists to `/home/student/calblack.cfg`**, loads at
   boot. `CALRESET` restores compile-time defaults and deletes the file.
@@ -205,7 +206,7 @@ PyQt6 scene (±150 cm, both robots start at center). Two robot markers (Robot41=
 Robot80=magenta) each have independent pose state (`self.bots[robot_name]["angle"]`, `.marker`,
 `.pending_pt`, `.sweep_items`, `.boundary_segments`, `.corner_angles`, `.tape_hits`,
 `.black_contacts`). A shared `self.cliffs` layer collects hazard points from both robots.
-Integrates pose from `STEPS`/`ORT` (`STEPS,n` forward displacement, converted via `CM_PER_STEP`;
+Integrates pose from `STEPS`/`ORT` (`STEPS,n` forward displacement as a `MOVE_UNIT` chunk count, converted via `CM_PER_UNIT`;
 `ORT,ort,theta` heading snaps); renders the robot, fitted **boundary** polygons
 (total-least-squares per-robot), **cliffs** (red X, shared), **no-go boxes**, **mountains**
 (amber ring), **rocks** (`FOUND_ROCK`), **explored semicircles** (`REGION`), and **swept objects**
@@ -241,7 +242,8 @@ Live contacts show as faint amber dots as they arrive.
 - **Logging:** `LOGON`/`LOGOFF` toggle the wireless `LOG` mirror (off for the scored demo).
 
 ### Message protocol (firmware → UI), selected
-`STEPS,n` (forward displacement in steps; UI converts via `CM_PER_STEP`. Firmware does **not** emit
+`STEPS,n` (forward displacement as a `MOVE_UNIT` **chunk count**; UI converts via
+`CM_PER_UNIT = MOVE_UNIT·CM_PER_STEP` ≈ 6.15 cm/chunk — NOT raw steps. Firmware does **not** emit
 `ODOM` — a legacy/dead `ODOM` handler lingers in the UI but is never exercised) ·
 `ORT,ort,theta` (orientation snap; firmware `ort` 1=N, 2=E, 3=S, 4=W; UI maps to scene degrees
 `{1:0, 2:90, 3:180, 4:270}` then adds `theta` — the old `{1:90,2:180,3:270,4:0}` map was a 90°
