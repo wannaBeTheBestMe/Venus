@@ -41,6 +41,58 @@ static int autorun_read_bounded(char msg[], int budget_ms)
 	return 1;
 }
 
+// F-local forward batch with non-progress detection. Issues one MOVE_UNIT batch
+// and polls to completion exactly like move_batch_until, BUT distinguishes a real
+// batch (the stepper actually consumed steps) from a dropped/instant-done batch
+// (the robot is pinned on tape and stepper_steps silently dropped the command, so
+// stepper_steps_done() is true on the first poll). Used ONLY by the "F" handler;
+// move_batch_until is left untouched for every other caller.
+//
+// Returns:
+//   F_BATCH_MOVED  (0) - a real MOVE_UNIT of motion completed (advance the count)
+//   F_BATCH_STOP   (1) - stop() fired (g_black cliff or operator S) - halted now
+//   F_BATCH_NOPROG (2) - batch did NO motion (dropped/instant-done); robot pinned.
+//                        The stop() condition is STILL checked before returning, so
+//                        a real cliff that latched on this batch is never missed.
+#define F_BATCH_MOVED   0
+#define F_BATCH_STOP    1
+#define F_BATCH_NOPROG  2
+static int f_batch_forward(int steps, int speed, int (*stop)(void))
+{
+    stepper_set_speed(speed, speed);
+    stepper_steps(steps, steps);
+
+    // Readback the steps PENDING in the just-issued command. On a real batch the
+    // full magnitude is still queued here; on a dropped/instant batch it reads ~0.
+    int16_t rl = 0, rr = 0;
+    stepper_get_steps(&rl, &rr);
+
+    int polls = 0;
+    while (!stepper_steps_done())
+    {
+        // Always honour the stop condition first, even on this path: a real cliff
+        // must halt instantly and be reported, never masked by no-progress logic.
+        if (stop()) { stepper_halt(); return F_BATCH_STOP; }
+        sleep_msec(2);
+        polls++;
+    }
+
+    // Re-check the stop condition once after the batch settles: a cliff can latch
+    // exactly as stepper_steps_done() flips, and a pinned/instant batch never
+    // entered the poll loop at all (polls == 0) so it would otherwise skip stop().
+    if (stop()) { stepper_halt(); return F_BATCH_STOP; }
+
+    // Non-progress: a genuine MOVE_UNIT at SPEED_ULTRA_SLOW takes tens of ms, so the
+    // poll loop runs >=1 iteration AND the readback showed the full step magnitude
+    // pending. A dropped/pinned batch is instant-done (polls == 0) and showed ~0
+    // pending. Either signal alone is sufficient; require both to be "real" to count
+    // it as motion (conservative: any doubt -> treated as no-progress, never inflates).
+    int abs_steps = steps < 0 ? -steps : steps;
+    int pending   = (rl < 0 ? -rl : rl);   // left magnitude (left==right for forward)
+    int moved_real = (polls > 0) && (pending >= abs_steps / 2);
+    return moved_real ? F_BATCH_MOVED : F_BATCH_NOPROG;
+}
+
 int main(void)
 {
     pynq_init();
@@ -220,15 +272,43 @@ int main(void)
             // =========================
             if(strcmp(MSG, "F") == 0)
             {
-                long count = 0;
+                // Last-resort cap on forward travel in MOVE_UNIT chunks. Raised ABOVE
+                // the arena diagonal (~212 cm / 6.15 cm-per-unit ≈ 35 chunks -> 40) so a
+                // legitimate full-arena straight traverse is never truncated. With count
+                // now counting ONLY real-motion batches (f_batch_forward == F_BATCH_MOVED),
+                // a cap hit here represents a TRUE distance, so STEPS,count is valid.
+#define F_MAX_CHUNKS 40
+                // Consecutive no-progress batches that mean "the robot is pinned and not
+                // advancing" (dropped/instant-done batches). A single instant batch can
+                // happen transiently; require K in a row before declaring non-progress.
+#define F_NOPROG_LIMIT 3
+
+                // count = MOVE_UNIT chunks of REAL motion completed (matches
+                // advance_monitored; UI scales by CM_PER_UNIT to centimetres).
+                // Incremented ONLY on F_BATCH_MOVED, so a pinned-on-tape F that never
+                // actually advances emits the truthful STEPS,0 (not the old bogus 30).
+                long count   = 0;
+                int  noprog  = 0;   // consecutive no-progress batches
 
                 while(1)
                 {
-                    // one batch at a time (no queue-ahead); halts on cliff (g_black) or "S"
-                    int stopped = move_batch_until(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
-                    count++;
+                    // Last-resort cap (true distance now that count is motion-only).
+                    if (count >= F_MAX_CHUNKS)
+                    {
+                        log_msg("F: max chunks (%d) reached", F_MAX_CHUNKS);
+                        { char stp[64]; sprintf(stp, "STEPS,%ld", count); send_message(stp); }
+                        print_orientation(&ori);
+                        send_orientation(&ori);
+                        break;
+                    }
 
-                    if (stopped)
+                    // one batch at a time (no queue-ahead). f_batch_forward STILL checks
+                    // the stop condition on every path, so a cliff (g_black) or "S" halts
+                    // and reports even on a dropped/instant batch — a real cliff is never
+                    // missed by the no-progress logic.
+                    int r = f_batch_forward(MOVE_UNIT, SPEED_ULTRA_SLOW, stop_black_or_S);
+
+                    if (r == F_BATCH_STOP)
                     {
                         if (g_black)
                         {
@@ -248,7 +328,42 @@ int main(void)
                         send_orientation(&ori);
                         break;
                     }
+
+                    if (r == F_BATCH_NOPROG)
+                    {
+                        // Batch did no motion. Count consecutive no-progress events; a
+                        // run of them means the robot is pinned (e.g. nose on tape) and
+                        // can't advance — break instead of spinning. count stays truthful.
+                        if (++noprog >= F_NOPROG_LIMIT)
+                        {
+                            log_msg("F: non-progress (%d consecutive no-motion batches), halting (count=%ld)", noprog, count);
+                            { char stp[64]; sprintf(stp, "STEPS,%ld", count); send_message(stp); }
+                            // If pinned on real black, take the SAME path as a black stop:
+                            // NOGO box + ack the latch. Otherwise just report progress.
+                            if (g_black)
+                            {
+                                report_nogo();   // UI: red cliff box at the halt pose
+                                print_orientation(&ori);
+                                send_orientation(&ori);
+                                g_black_ack();
+                            }
+                            else
+                            {
+                                print_orientation(&ori);
+                                send_orientation(&ori);
+                            }
+                            break;
+                        }
+                        // transient instant batch: retry without inflating count
+                        continue;
+                    }
+
+                    // r == F_BATCH_MOVED: one real MOVE_UNIT of progress confirmed.
+                    count++;
+                    noprog = 0;   // real motion clears the no-progress streak
                 }
+#undef F_NOPROG_LIMIT
+#undef F_MAX_CHUNKS
             }
 
             // =========================
