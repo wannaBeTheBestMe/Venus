@@ -9,6 +9,38 @@ struct rock_data_t {
 	float temp;
 };
 
+// Bounded UART frame reader for the AUTORUN soft-stop window. Mirrors
+// read_uart_message's framing (4-byte LE length + payload, MAX_MSG_LEN clamp)
+// but never busy-waits forever: each per-byte wait is capped by budget_ms.
+// Returns 1 with a complete message in msg, or 0 on timeout/partial frame
+// (so a stray/corrupt byte during boot can't hang autonomy). main_header.h:157.
+static int autorun_read_bounded(char msg[], int budget_ms)
+{
+	int spent = 0;
+	uint32_t len = 0;
+	for (int i = 0; i < 4; i++)
+	{
+		while (!uart_has_data(UART0))
+		{
+			if (spent >= budget_ms) return 0;
+			sleep_msec(2); spent += 2;
+		}
+		len |= ((uint32_t)uart_recv(UART0) << (8 * i));
+	}
+	if (len >= MAX_MSG_LEN) len = MAX_MSG_LEN - 1;
+	for (uint32_t i = 0; i < len; i++)
+	{
+		while (!uart_has_data(UART0))
+		{
+			if (spent >= budget_ms) return 0;
+			sleep_msec(2); spent += 2;
+		}
+		msg[i] = uart_recv(UART0);
+	}
+	msg[len] = '\0';
+	return 1;
+}
+
 int main(void)
 {
     pynq_init();
@@ -88,7 +120,32 @@ int main(void)
     if (cal_loaded)
     {
         // Optional identification ping (F1 optional; coordinate with F8 — see notes).
-        send_message("HELLO,41");   // <-- set 41 or 80 per board; keep additive to F8 attribution
+        // Board id read from ~/robot_id at runtime so a single binary serves both boards.
+        // Falls back to "41" if the file is missing or empty (safe default).
+        {
+            char robot_id[16] = "41";
+            const char *home = getenv("HOME");
+            if (!home) home = "/home/student";
+            char id_path[128];
+            snprintf(id_path, sizeof id_path, "%s/robot_id", home);
+            FILE *id_f = fopen(id_path, "r");
+            if (id_f)
+            {
+                char tmp[16];
+                if (fgets(tmp, sizeof tmp, id_f))
+                {
+                    // strip trailing newline/whitespace
+                    int tl = (int)strlen(tmp);
+                    while (tl > 0 && (tmp[tl-1] == '\n' || tmp[tl-1] == '\r' || tmp[tl-1] == ' '))
+                        tmp[--tl] = '\0';
+                    if (tl > 0) snprintf(robot_id, sizeof robot_id, "%s", tmp);
+                }
+                fclose(id_f);
+            }
+            char hello_msg[32];
+            snprintf(hello_msg, sizeof hello_msg, "HELLO,%s", robot_id);
+            send_message(hello_msg);
+        }
         send_message("LOG,AUTORUN: exploring in 5s - send S or HOLD to take manual control");
 
         // ---- soft-stop window: bounded, non-blocking poll for an early S/HOLD ----
@@ -102,15 +159,19 @@ int main(void)
 
         while (waited < AUTORUN_WINDOW_MS)
         {
-            if (uart_has_data(UART0))                 // gate: only then is the read bounded
+            if (uart_has_data(UART0))
             {
-                read_uart_message(UART0, MSG);        // safe: a full frame is already arriving
-                if (strcmp(MSG, "S") == 0 || strcmp(MSG, "HOLD") == 0)
+                // Bounded read: a real frame completes in ~1 ms; a partial/corrupt
+                // frame returns 0 after at most this small budget instead of
+                // blocking boot. Keep the budget << the window so a glitch can't
+                // meaningfully stretch the ~5 s settle.
+                if (autorun_read_bounded(MSG, 300)
+                    && (strcmp(MSG, "S") == 0 || strcmp(MSG, "HOLD") == 0))
                 {
                     autorun_aborted = 1;
                     break;
                 }
-                // any other early byte: ignore, keep settling (don't auto-dispatch here)
+                // any other early/partial frame: ignore, keep settling
             }
             sleep_msec(AUTORUN_POLL_MS);
             waited += AUTORUN_POLL_MS;
@@ -607,9 +668,7 @@ int main(void)
 
             exp_obj_t objs[EXP_MAX_OBJ];
             int n = sweep_collect(&ori, objs, EXP_MAX_OBJ);
-
-            if (n == -2)      log_msg("SWEEP ABORTED on black");
-            else if (n == -3) log_msg("SWEEP ABORTED on S");
+            // (sweep_collect now logs the abort reason at the source for every caller.)
 
             char m[64];
             sprintf(m, "OBJN,%d", (n < 0) ? 0 : n);
@@ -628,24 +687,37 @@ int main(void)
         // ---- test sub-command: drift check (sweep -> approach one rock -> return -> re-sweep) ----
         else if (strcmp(MSG, "RSC") == 0)
         {
-            g_black_ack();   // clear any stale cliff latch (like EXP1)
+            // Isolate the IN-PLACE sweeps from the cliff monitor (like SWEEPQ): an in-place
+            // rotation doesn't translate toward a cliff, so g_black must not abort it. The
+            // approach + return DO translate, so the monitor is re-armed around them.
+            int mon_was_on = g_mon_run;
+            exp_mon_stop(); g_black = 0;
 
             float     origin_heading = get_heading(&ori);
             exp_obj_t objs[EXP_MAX_OBJ];
             int n = sweep_collect(&ori, objs, EXP_MAX_OBJ);
-            if (n < 2) { log_msg("RSC: need >=2 objects (got %d)", (n < 0) ? 0 : n); }
+            if (n < 0)      { log_msg("RSC: sweep aborted (%s) - no drift check", (n == -2) ? "black/cliff" : "stop"); }
+            else if (n < 2) { log_msg("RSC: need >=2 objects (got %d)", n); }
             else
             {
                 exp_obj_t objs0[EXP_MAX_OBJ];
                 for (int i = 0; i < n; i++) objs0[i] = objs[i];
 
                 exp_rotate_rel(&ori, objs[0].rel_deg);   // aim at the first rock
+                if (mon_was_on) exp_mon_start();         // re-arm: approach + return must be cliff-guarded
                 int moved = 0;
                 int r = approach_object(&ori, &moved);
                 return_to_origin(&ori, origin_heading, moved);
-                if (r == ADV_DONE) resweep_correct(&ori, objs, objs0, n, 0, 1);  // report=1
-                else               log_msg("RSC: approach aborted (%d) - no drift report", r);
+                if (mon_was_on) { exp_mon_stop(); g_black = 0; }   // isolate the re-sweep too
+                if (r == ADV_DONE)
+                {
+                    int rr = resweep_correct(&ori, objs, objs0, n, 0, 1);  // report=1
+                    if (rr == ADV_BLACK || rr == ADV_STOP)
+                        log_msg("RSC: re-sweep aborted (%s)", (rr == ADV_BLACK) ? "black" : "stop");
+                }
+                else log_msg("RSC: approach aborted (%d) - no drift report", r);
             }
+            if (mon_was_on) exp_mon_start();   // always restore the monitor
             send_orientation(&ori);
         }
 

@@ -511,15 +511,17 @@ class VenusDashboard(QMainWindow):
             return []
         gap_px = self.BLACK_CLUSTER_GAP_CM * SCALE
         clusters = [[contacts[0]]]
+        prev = contacts[0]
         for pt in contacts[1:]:
-            prev = clusters[-1][-1]
             d = math.hypot(pt["x"] - prev["x"], pt["y"] - prev["y"])
-            # A reset run counter (run == 1) also forces a new cluster: the firmware
-            # cleared the run on intervening forward progress, so this is a fresh contact.
-            if d > gap_px or pt.get("run", 1) <= 1 and len(clusters[-1]) > 1:
+            # A run reset (prev run > 1 dropping back to 1) means the firmware started a
+            # fresh EXPLORE pass — always force a new cluster regardless of current size.
+            run_reset = (prev.get("run", 1) > 1 and pt.get("run", 1) == 1)
+            if d > gap_px or run_reset:
                 clusters.append([pt])
             else:
                 clusters[-1].append(pt)
+            prev = pt
         return clusters
 
     def _segment_boundary_loop(self, st, cluster):
@@ -737,8 +739,9 @@ class VenusDashboard(QMainWindow):
                 target.setRotation(new_angle_deg)
                 target.setPos(nx, ny)
 
-                label = self.pos_41_label if is_41 else self.pos_80_label
-                label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
+                label = {"Robot41": self.pos_41_label, "Robot80": self.pos_80_label}.get(robot_name)
+                if label is not None:
+                    label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
 
             # --- FINE ROTATION ---
             elif cmd == "ROT":
@@ -795,8 +798,9 @@ class VenusDashboard(QMainWindow):
                 trail_color = CYAN if is_41 else MAGENTA
                 self.scene.addLine(old_pos.x(), old_pos.y(), nx, ny, QPen(QColor(trail_color), 2, Qt.PenStyle.SolidLine))
 
-                label = self.pos_41_label if is_41 else self.pos_80_label
-                label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
+                label = {"Robot41": self.pos_41_label, "Robot80": self.pos_80_label}.get(robot_name)
+                if label is not None:
+                    label.setText(f"X: {round(nx/SCALE,1)} | Y: {round(ny/SCALE,1)}")
 
             # --- POSFIX: translation fix from re-sweep bearing/distance geometry (F4) ---
             elif cmd == "POSFIX":
@@ -895,6 +899,7 @@ class VenusDashboard(QMainWindow):
             # --- EXPLORE: run finished ---
             elif cmd == "EXPLORE_DONE":
                 self.classify_black_contacts(st)   # F5: cluster + draw
+                st["black_contacts"] = []           # reset so next EXPLORE run starts clean
                 self.log_widget.append(
                     f"<span style='color:{CYAN};'>[EXPLORE] mapping run complete.</span>")
 

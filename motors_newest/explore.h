@@ -107,7 +107,7 @@ static int exp_check(void)
     {
         char m[MAX_MSG_LEN];
         read_uart_message(UART0, m);
-        if (strcmp(m, "S") == 0) { g_stop = 1; return 2; }
+        if (strcmp(m, "S") == 0 || strcmp(m, "HOLD") == 0) { g_stop = 1; return 2; }
     }
     if (g_stop) return 2;
     return 0;
@@ -191,8 +191,8 @@ static int sweep_collect(orientation_t *ori, exp_obj_t *objs, int maxn)
     for (int i = 0; i < steps; i++)
     {
         int chk = exp_check();
-        if (chk == 1) return -2;
-        if (chk == 2) return -3;
+        if (chk == 1) { log_msg("SWEEP: aborted on BLACK at ~%.0f deg (objs=%d)", -90.0f + (float)i * SWEEP_STEP_DEG, n); return -2; }
+        if (chk == 2) { log_msg("SWEEP: aborted on STOP at ~%.0f deg (objs=%d)",  -90.0f + (float)i * SWEEP_STEP_DEG, n); return -3; }
 
         sweep_rotate(ori, SWEEP_STEP_DEG);
 
@@ -727,7 +727,7 @@ static int resweep_correct(orientation_t *ori, exp_obj_t *objs, const exp_obj_t 
         {
             if (match_of[i] < 0) continue;
             float ai = objs0[i].rel_deg   * EXP_DEG2RAD;  // initial bearing (rad)
-            float bi = robjs[match_of[i]].rel_deg * EXP_DEG2RAD;  // re-swept bearing (rad)
+            float bi = (robjs[match_of[i]].rel_deg - drift) * EXP_DEG2RAD;  // re-swept bearing drift-corrected (rad)
             float ri = (float)objs0[i].dist_mm;
             float si = (float)robjs[match_of[i]].dist_mm;
 
@@ -767,10 +767,13 @@ static int resweep_correct(orientation_t *ori, exp_obj_t *objs, const exp_obj_t 
                         robjs[match_of[i]].rel_deg - objs0[i].rel_deg);
                 send_message(m);
             }
-        // F4: emit translation fix if geometry was non-degenerate
+        // F4: emit translation fix if geometry was non-degenerate.
+        // Negate: posfix_dx/dy = (resweep - original) = negative when robot drifted
+        // in the positive direction; the UI applies the values directly, so we
+        // flip the sign so a rightward drift of +D emits POSFIX,+D,...
         if (posfix_ok)
         {
-            sprintf(m, "POSFIX,%d,%d", (int)posfix_dx, (int)posfix_dy);
+            sprintf(m, "POSFIX,%d,%d", -(int)posfix_dx, -(int)posfix_dy);
             send_message(m);
         }
     }

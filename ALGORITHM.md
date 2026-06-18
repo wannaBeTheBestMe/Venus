@@ -62,7 +62,8 @@ a mapping/visualization layer.
   returns to origin, and reported bearings match the physical heading.
 - **Orientation** (`orientation_t`): quadrant `ort` (1=N,2=E,3=S,4=W) + `theta` (0–90°);
   `get_heading = (ort−1)·90 + theta`. Firmware updates it on *deliberate* turns; the UI keeps live
-  (x,y,heading) by integrating `ODOM`/`ORT`.
+  (x,y,heading) by integrating `STEPS`/`ORT` (`STEPS,n` = forward displacement in steps, converted
+  via `CM_PER_STEP`; `ORT,ort,theta` = heading snaps).
 - **Black calibration** (`CALBLACK`): operator shows the **white floor** then **black tape**;
   firmware stores clear-channel min/max, **persists to `/home/student/calblack.cfg`**, loads at
   boot. `CALRESET` restores compile-time defaults and deletes the file.
@@ -140,6 +141,10 @@ neighbors. The detector (`sweep_collect`):
   reading** + that minimum distance.
 - *Physical limit:* two objects at ~equal distance within one cone-width can still merge (sensor
   resolution, not a bug).
+- *Logging:* on normal completion `sweep_collect` logs `SWEEP: N obj, closest=… mm`; if it aborts
+  early it logs the **reason at the source** — `SWEEP: aborted on BLACK/STOP at ~<deg>` (so every
+  caller — `RSC`, `SWEEPQ`, `EXPLORE`, the re-sweep — explains a mid-sweep stop instead of failing
+  silently). Callers no longer disguise a `−2/−3` abort as "0 objects."
 
 ## 8. Object classification (`classify_object`)
 Approach two-phase to ~15 mm at the slowest speed, then a fixed open-loop ~5 mm nudge (forward sensor is unreliable below ~15 mm), parking the overhead over the rock. Then: front color sensor → color; overhead sensor (10 readings) → size; thermistor (ADC0) → temperature. A rock is reported as `FOUND_ROCK,size,color,temp` (temp `n/a` if the ADC read is invalid).
@@ -155,7 +160,8 @@ PyQt6 scene (±150 cm, both robots start at center). Two robot markers (Robot41=
 Robot80=magenta) each have independent pose state (`self.bots[robot_name]["angle"]`, `.marker`,
 `.pending_pt`, `.sweep_items`, `.boundary_segments`, `.corner_angles`, `.tape_hits`,
 `.black_contacts`). A shared `self.cliffs` layer collects hazard points from both robots.
-Integrates pose from `ODOM`/`ORT`; renders the robot, fitted **boundary** polygons
+Integrates pose from `STEPS`/`ORT` (`STEPS,n` forward displacement, converted via `CM_PER_STEP`;
+`ORT,ort,theta` heading snaps); renders the robot, fitted **boundary** polygons
 (total-least-squares per-robot), **cliffs** (red X, shared), **no-go boxes**, **mountains**
 (amber ring), **rocks** (`FOUND_ROCK`), **explored semicircles** (`REGION`), and **swept objects**
 (`OBJ` markers with a distance label + a line from the robot — per-robot, cleared per sweep). A
@@ -174,7 +180,11 @@ Live contacts show as faint amber dots as they arrive.
   `MTN` (mountain avoidance), `NUDGE` (the open-loop ~5 mm final approach step in isolation),
   `RSC` (re-sweep drift check: sweep → approach one rock → return → re-sweep, reports `DRIFT`/`DOBJ`;
   also emits `POSFIX,dx_mm,dy_mm` — translation fix, integers, robot-local frame — when ≥2
-  non-collinear matched rocks are available; skips with a log if geometry is degenerate),
+  non-collinear matched rocks are available; skips with a log if geometry is degenerate. Like
+  `SWEEPQ`, RSC **isolates its in-place sweeps from the cliff monitor** (`exp_mon_stop`+`g_black=0`
+  around each sweep — an in-place rotation can't translate toward a cliff) and **re-arms the monitor
+  for the translating approach + return**, so it no longer freezes mid-sweep near tape. A sweep that
+  does abort is now logged with its reason — see §7),
   `ESCAPE` (F3 trap/corner-escape routine in isolation: forces a stuck state and runs the open-direction
   scan + commit-move escape).
 - **Manual moves** — `F`, `FB`, `O`, `MOVE`, `R`/`L`, `STOPBLACK` — all honor the global cliff-stop.
@@ -186,11 +196,12 @@ Live contacts show as faint amber dots as they arrive.
 - **Logging:** `LOGON`/`LOGOFF` toggle the wireless `LOG` mirror (off for the scored demo).
 
 ### Message protocol (firmware → UI), selected
-`ODOM,l,r` (pose increment) ·
+`STEPS,n` (forward displacement in steps; UI converts via `CM_PER_STEP`. Firmware does **not** emit
+`ODOM` — a legacy/dead `ODOM` handler lingers in the UI but is never exercised) ·
 `ORT,ort,theta` (orientation snap; firmware `ort` 1=N, 2=E, 3=S, 4=W; UI maps to scene degrees
 `{1:0, 2:90, 3:180, 4:270}` then adds `theta` — the old `{1:90,2:180,3:270,4:0}` map was a 90°
 systematic error, fixed in F8) ·
-`STEPS,n` · `REGION,radius_cm` ·
+`REGION,radius_cm` ·
 `OBJN,n` then `OBJ,rel_deg,dist_mm` (swept objects) · `FOUND_ROCK,size,color[,temp]` ·
 `MOUNTAIN,size_cm` · `NOGO` (10×10 cm cliff box) ·
 `BLACKPT,heading,run` (F5; per black contact, paired with `NOGO`, additive — heading in deg,
