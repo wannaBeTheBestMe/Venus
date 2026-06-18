@@ -35,6 +35,9 @@
 #define EXP_CLUSTER_GAP_DEG   3       // >this many blank degrees closes an object cluster
 #define EXP_MM_PER_UNIT       61      // ~MOVE_UNIT(500) * 0.0123 cm/step * 10
 #define EXP_MON_SLEEP_MS      20
+#define BLACK_CONFIRM          3      // consecutive black reads the monitor needs before latching
+                                      //   g_black (debounce: rejects a stray spike; a real cliff
+                                      //   reads black continuously so it still latches in ~3 polls)
 #define EXP_APPROACH_CAP      40      // max phase-1 steps before giving up (steps now smaller)
 #define SWEEP_STEP_DEG        0.5f    // in-place rotation increment per sweep sample (finer = slower)
 #define SWEEP_SETTLE_MS       60      // settle after each step before sampling the forward sensor
@@ -88,9 +91,14 @@ static pthread_t    g_mon_thread;
 static void *exp_black_monitor(void *arg)
 {
     (void)arg;
+    int consec = 0;                       // consecutive black reads
     while (g_mon_run)
     {
-        if (detect_black()) g_black = 1;
+        if (detect_black())
+        {
+            if (++consec >= BLACK_CONFIRM) g_black = 1;   // latch only after N in a row
+        }
+        else consec = 0;                  // any white read breaks the run (rejects a stray spike)
         sleep_msec(EXP_MON_SLEEP_MS);
     }
     return NULL;

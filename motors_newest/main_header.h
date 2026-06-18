@@ -305,6 +305,7 @@ static long map_value(long x,
                       long out_min,
                       long out_max)
 {
+    if (in_max == in_min) return out_min;   // degenerate band -> safe default (avoid /0)
     return (x - in_min) *
            (out_max - out_min) /
            (in_max - in_min) +
@@ -361,8 +362,15 @@ static void cal_forget(void)
     remove(CAL_FILE);   // ignore failure (e.g. file absent)
 }
 
-// Read one filter channel's LOW-pulse width once. ch: 0=R,1=G,2=B,3=CLEAR.
-static long read_channel_raw(int ch)
+// ---- robust-read tuning (black-detection hardening) ----
+#define SENSOR_SETTLE_MS  10   // photodiode-filter stabilize time AFTER a channel change
+#define DETECT_SAMPLES     5   // median samples per cliff read (rejects scheduler-preemption outliers)
+#define CAL_SAMPLES        5   // median samples per calibration-reference read
+
+// Select a channel's photodiode filter (S2/S3) and let the output settle.
+// Settle is done HERE, BEFORE measuring — the previous code delayed AFTER the read,
+// so the first read of any newly-selected channel was unsettled.
+static void select_channel(int ch)
 {
     switch (ch)
     {
@@ -371,19 +379,62 @@ static long read_channel_raw(int ch)
         case 2: gpio_set_level(S2, GPIO_LEVEL_LOW);  gpio_set_level(S3, GPIO_LEVEL_HIGH); break; // B
         default: gpio_set_level(S2, GPIO_LEVEL_HIGH); gpio_set_level(S3, GPIO_LEVEL_LOW); break; // CLEAR
     }
-    long f = (long)pulseIn_LOW(SENSOR_OUT);
-    delay_ms(10);
-    return f;
+    delay_ms(SENSOR_SETTLE_MS);
+}
+
+// Median of n LOW-pulse reads on the ALREADY-SELECTED channel; drops pulseIn
+// timeouts (0). The single busy-wait pulse measurement (pulseIn_LOW) is corrupted
+// when the OS preempts the thread mid-measurement: the gap inflates the reading,
+// and an inflated CLEAR pulse maps toward black -> false positive on white. The
+// MEDIAN rejects such outliers in BOTH directions, so it kills the inflation
+// false-positives WITHOUT letting a single spuriously-short read fake a white
+// reading over black (i.e. it does not introduce false negatives). Returns 0 only
+// if every read timed out (maps to white via map_value -> no false cliff).
+static long median_pulse_n(int n)
+{
+    long s[16];
+    int  m = 0;
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++)
+    {
+        long f = (long)pulseIn_LOW(SENSOR_OUT);
+        if (f > 0) s[m++] = f;
+    }
+    if (m == 0) return 0;
+    for (int i = 1; i < m; i++)            // insertion sort (tiny m)
+    {
+        long k = s[i]; int j = i - 1;
+        while (j >= 0 && s[j] > k) { s[j + 1] = s[j]; j--; }
+        s[j + 1] = k;
+    }
+    return s[m / 2];
+}
+
+// Robust single-channel read for CALIBRATION references: select + settle + median.
+// ch: 0=R,1=G,2=B,3=CLEAR. The median makes each captured reference robust to a
+// stray (preempted) sample that would otherwise skew the white/black band.
+static long read_channel_raw(int ch)
+{
+    select_channel(ch);
+    return median_pulse_n(CAL_SAMPLES);
 }
 
 // Black detection from the CLEAR channel only: black = clear intensity below the
-// threshold. One read -> the monitor thread polls ~3x faster than the old RGB path.
+// threshold. Uses a MEDIAN of DETECT_SAMPLES pulses to reject scheduler-preemption
+// outliers (the root cause of false-positives-on-white). NO per-call settle: this
+// is polled in tight loops (move_batch_until stop-fn) and the monitor keeps CLEAR
+// selected, so we just re-assert S2/S3=CLEAR (idempotent, no transient) and read.
+// A single stale/outlier read is absorbed by the median here AND by the monitor's
+// consecutive-confirmation (see exp_black_monitor). This is also FASTER than the
+// old path (which carried a hidden delay_ms(10)), so the cliff stop is more prompt.
 static int detect_black(void)
 {
-    long freq = read_channel_raw(CAL_CLEAR);
+    gpio_set_level(S2, GPIO_LEVEL_HIGH);   // CLEAR = S2 high, S3 low (idempotent)
+    gpio_set_level(S3, GPIO_LEVEL_LOW);
+    long freq = median_pulse_n(DETECT_SAMPLES);
     int  v = clamp255(map_value(freq, cal_min[CAL_CLEAR], cal_max[CAL_CLEAR], 255, 0));
 
-    // printf("CLR=%d\n", v);   // silenced: the always-on monitor calls this continuously
+    // printf("CLR raw=%ld v=%d\n", freq, v);   // diagnostic: enable to see preemption spikes
 
     return (v < cal_black_thresh) ? 1 : 0;
 }
@@ -394,7 +445,7 @@ static int read_channel_refs(long out[4], int dur_ms)
 {
     long sum[4] = {0, 0, 0, 0};
     int  cnt[4] = {0, 0, 0, 0};
-    int  rounds = dur_ms / 40;          // ~40 ms per full R/G/B/Clear pass
+    int  rounds = dur_ms / 40;          // ~40-42 ms per full R/G/B/Clear pass (settle-dominated)
     if (rounds < 1) rounds = 1;
 
     for (int i = 0; i < rounds; i++)

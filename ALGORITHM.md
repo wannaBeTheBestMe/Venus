@@ -42,6 +42,11 @@ a mapping/visualization layer.
 ## 3. Sensors
 - **Downward TCS3200** — black detection (cliffs/boundary), **clear (unfiltered) channel** only
   (black → low reading). Mounted **ahead of the wheels** → lookahead before a wheel reaches an edge.
+  Each read is a **median of `DETECT_SAMPLES` pulse measurements** (`median_pulse_n`): the single
+  busy-wait pulse timing (`pulseIn_LOW`) is corrupted when the OS preempts the monitor thread
+  mid-measurement — the gap inflates the reading, and an inflated clear pulse maps toward black
+  (false positive on white). The median rejects those outliers in both directions, removing the
+  false positives without risking a false negative. (Filter-settle now happens *before* the read.)
 - **Forward VL53L0X** — objects/obstacles ahead. Range ≤ 500 mm, **wide ~25° cone**.
 - **Overhead VL53L0X** (≤ 90 mm) — object **size** classification once approached.
 - **Front TCS34725** — rock **color** (red/green/blue/black/white).
@@ -70,8 +75,11 @@ a mapping/visualization layer.
   boot. `CALRESET` restores compile-time defaults and deletes the file.
 
 ## 5. Global cliff-stop (safety spine)
-A **background thread** continuously reads the downward sensor and sets `g_black` on black; it is
-the sole owner of that sensor (commands needing raw color reads pause it). **Every
+A **background thread** continuously reads the downward sensor and sets `g_black` on black — but only
+after **`BLACK_CONFIRM` (3) consecutive** black reads (debounce); any white read resets the run. So a
+single stray reading can't latch a false cliff, while a real cliff (read black continuously) still
+latches within ~3 polls (tens of ms ≈ sub-mm of travel at explore speed, far inside the wheel-lead
+margin). It is the sole owner of that sensor (commands needing raw color reads pause it). **Every
 forward-translating command halts the instant `g_black` is set**, so the robot stops before a wheel
 crosses an edge (the ahead-of-wheels mounting gives the margin). It **auto-starts at boot only if a
 calibration is loaded** (an uncalibrated monitor could read the floor as black and freeze motion).

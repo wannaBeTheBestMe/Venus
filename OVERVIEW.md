@@ -85,6 +85,12 @@ halts with a margin to spare, before a wheel can cross the edge. After stopping 
 inward to escape — it never tries to drive *around* an unknown black line, because that line might be
 the arena's edge.
 
+To avoid stopping for nothing, the watcher **double-checks** each reading: it takes several quick
+samples and uses the middle value, and only treats the floor as a cliff after a few black readings in
+a row. This filters out the occasional electrical "blip" (which previously made it stop on plain white)
+while still reacting to a real edge within a fraction of a second — so it stops when it should, and
+only when it should.
+
 It also handles two trickier situations: if a **mountain** blocks the way, it backs off and sidesteps
 until the path is clear; and if it gets **boxed into a corner** — pinned between a cliff and an
 obstacle — it does a careful scan for the most open direction and commits to a longer move to break
