@@ -617,7 +617,7 @@ int main(void)
             int cycles = 5; // default
             sscanf(MSG, "SHL,%d", &cycles);
 
-            shuffle_sideways(&ori, cycles, true);
+            if (shuffle_sideways(&ori, cycles, true)) g_black_ack();  // clear cliff latch if the strafe aborted on black
 
             print_orientation(&ori);
             send_orientation(&ori);
@@ -631,7 +631,7 @@ int main(void)
             int cycles = 5; // default
             sscanf(MSG, "SHR,%d", &cycles);
 
-            shuffle_sideways(&ori, cycles, false);
+            if (shuffle_sideways(&ori, cycles, false)) g_black_ack();  // clear cliff latch if the strafe aborted on black
 
             print_orientation(&ori);
             send_orientation(&ori);

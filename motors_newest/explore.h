@@ -56,6 +56,14 @@
 #define EXP_TRAP_COMMIT_MM    450    // longer clear move committed to break out (> the 300 mm hop)
 #define EXP_TRAP_MAX_TRIES    3      // escape attempts before giving up (stop + log) -- bounded
 
+// ---- F2: boustrophedon coverage ----
+// Total hop budget across the entire mission (guards against any infinite loop).
+// 1.5 m arena / EXP_ADVANCE_MM = ~5 lane hops per direction; 60 >> that.
+#define EXP_BOUS_HOP_BUDGET     60
+// How many consecutive lane-start failures (both sidestep directions blocked, moved==0)
+// before we declare the arena exhausted and emit EXPLORE_DONE.
+#define EXP_BOUS_EXHAUST_LANES  2
+
 // ---- F4: POSFIX translation estimation ----
 #define EXP_POSFIX_MIN_SPAN_DEG  20.0f   // min bearing spread (deg) to avoid collinear degeneracy
 #define EXP_DEG2RAD              0.01745329f  // pi/180; avoids importing full math header just for this
@@ -497,7 +505,15 @@ static void avoid_mountain(orientation_t *ori)
     for (int tries = 0; tries < 8; tries++)
     {
         if (g_stop) break;
-        shuffle_sideways(ori, 2, true);      // strafe (toward one side)
+        int hit = shuffle_sideways(ori, 2, true);   // strafe (toward one side); cliff-gated
+        if (hit)
+        {
+            // Strafe was aborted on black/cliff tape — stop strafing immediately.
+            // handle_black (called by the outer advance_with_escape loop) will back
+            // off and reorient; avoid continuing to drive into the boundary.
+            log_msg("avoid_mountain: strafe aborted on black - deferring to handle_black");
+            break;
+        }
         int32_t d = read_distance_forward();
         if (!(d > 0 && d < EXP_MOUNTAIN_NEAR_MM)) break;   // path ahead is clear
     }
@@ -515,6 +531,13 @@ static int g_haz_streak = 0;                 // F3 trap detector (reset on real 
 static void haz_note(void)  { g_haz_streak++; }
 static void haz_reset(void) { g_haz_streak = 0; }
 static int  haz_stuck(void) { return g_haz_streak >= EXP_TRAP_HAZ_LIMIT; }
+
+// F2: boustrophedon state (reset at run_explore entry).
+static int g_bous_hops         = 0;  // total hops consumed (counts toward HOP_BUDGET)
+static int g_bous_sidestep_dir = 1;  // +1 = try CW first, -1 = try CCW first (alternates
+                                     //   so arena coverage is symmetric on re-enters)
+static int g_bous_blocked      = 0;  // consecutive both-sidesteps-blocked events; arena
+                                     //   exhausted (-> EXPLORE_DONE) at EXP_BOUS_EXHAUST_LANES
 
 // Bounded in-place scan for the most-open heading. Pivots up to EXP_TRAP_SCAN_DEG/2 to EACH
 // side of the current heading, returning to centre between halves so the body never circles
@@ -632,7 +655,22 @@ static int advance_with_escape(orientation_t *ori)
     int r = advance_monitored(ori, EXP_ADVANCE_MM, &moved);
 
     if (r == ADV_STOP) return 0;
-    if (r == ADV_DONE) { if (moved > 0) { haz_reset(); g_black_run = 0; } return 1; }  // net progress -> not stuck; F5: break the black run too
+    if (r == ADV_DONE)
+    {
+        if (moved > 0)
+        {
+            haz_reset();
+            g_black_run = 0;
+            /* Gap-8: marker advances every hop (consistent with F/O: emit moved chunk count) */
+            {
+                char _stp[64];
+                snprintf(_stp, sizeof _stp, "STEPS,%d", moved);
+                send_message(_stp);
+                send_orientation(ori);
+            }
+        }
+        return 1;
+    }  // net progress -> not stuck; F5: break the black run too
 
     if (r == ADV_BLACK)    handle_black(ori);
     else                   avoid_mountain(ori);                   // ADV_MOUNTAIN
@@ -706,6 +744,12 @@ static int resweep_correct(orientation_t *ori, exp_obj_t *objs, const exp_obj_t 
         rotate_orientation(ori, -drift);     // make ori truthful (true heading = ori + e)
         log_msg("RESWEEP: matched=%d drift=%.1f", nd, drift);
         send_orientation(ori);
+        /* Gap-7: emit DRIFT unconditionally when correction applies (both report=0 and report=1) */
+        {
+            char _dm[64];
+            snprintf(_dm, sizeof _dm, "DRIFT,%.1f,%d", drift, nd);
+            send_message(_dm);
+        }
     }
     else
         log_msg("RESWEEP: matched=%d (<%d) - no heading correction", nd, EXP_RESWEEP_MIN_REFS);
@@ -757,9 +801,21 @@ static int resweep_correct(orientation_t *ori, exp_obj_t *objs, const exp_obj_t 
 
     if (report)
     {
+        /* Gap-3: RSC gives same sweep-complete visual as SWEEPQ */
+        {
+            char m[64];
+            snprintf(m, sizeof m, "OBJN,%d", rn);
+            send_message(m);
+            for (int _gi = 0; _gi < rn; _gi++)
+            {
+                snprintf(m, sizeof m, "OBJ,%.1f,%d",
+                         robjs[_gi].rel_deg, (int)robjs[_gi].dist_mm);
+                send_message(m);
+            }
+        }
+        /* Gap-7 cleanup: DRIFT now emitted unconditionally above (inside nd>=MIN_REFS block);
+           removed here to avoid double-emit on the RSC path. char m[64] kept for DOBJ/POSFIX. */
         char m[64];
-        sprintf(m, "DRIFT,%.1f,%d", drift, nd);
-        send_message(m);
         for (int i = 0; i < n; i++)
             if (match_of[i] >= 0)
             {
@@ -795,14 +851,84 @@ static int resweep_correct(orientation_t *ori, exp_obj_t *objs, const exp_obj_t 
 }
 
 // ------------------------------------------------------
+// F2: boustrophedon sidestep — turn 90°, advance one lane-width, turn back.
+// Returns 1 if the sidestep made net progress (moved > 0), 0 if blocked.
+// Cliff-safe: all lateral motion goes through advance_monitored.
+// dir: +90.0f = try CW (right), -90.0f = try CCW (left).
+// Uses heading-restoration so that handle_black's implicit 90° interior turn
+// cannot leave the robot on a wrong heading after a failure path.
+// On success: ori ends up facing (heading_before + 180°) — the reverse lane
+//   direction, ready to drive back the other way in boustrophedon fashion.
+// On failure: ori is restored to heading_before so the caller can try the
+//   opposite direction cleanly.
+// ------------------------------------------------------
+// Rotate to an ABSOLUTE target heading by the shortest direction. Robust no
+// matter what a hazard handler did to the current heading in between, because
+// it re-reads get_heading(ori) and normalises the delta to [-180,180].
+static void rotate_to_heading(orientation_t *ori, float target)
+{
+    float delta = target - get_heading(ori);
+    while (delta >  180.0f) delta -= 360.0f;
+    while (delta < -180.0f) delta += 360.0f;
+    exp_rotate_deg(ori, delta);
+}
+
+// Sidestep into the next boustrophedon lane. `lane_heading` is the ORIGINAL lane
+// direction captured by the caller BEFORE any hazard handler rotated the body,
+// so every turn here targets an ABSOLUTE heading (handle_black turns ~90°
+// interior on its own — a delta-based turn off the corrupted current heading
+// would spiral, not lawnmower). `dir` = +90 (CW) / -90 (CCW) picks the lateral
+// side. On success: steps one lane-width laterally and leaves the body facing
+// the REVERSE lane (lane_heading+180). Returns 1 on a successful lateral hop,
+// 0 if blocked (and restores lane_heading so the caller can try the other side).
+static int bous_sidestep(orientation_t *ori, float lane_heading, float dir)
+{
+    rotate_to_heading(ori, lane_heading + dir);   // face laterally (absolute)
+
+    int moved = 0;
+    int r = advance_monitored(ori, EXP_ADVANCE_MM, &moved);
+
+    if (r == ADV_STOP) { g_stop = 1; return 0; }
+
+    if (r == ADV_DONE && moved > 0)   // moved>0 always holds for ADV_DONE; kept for clarity
+    {
+        // UI-feedback: ORT FIRST so the marker steps in the LATERAL heading,
+        // THEN STEPS (moved directly, matching O/FB/advance_with_escape).
+        char sm[32];
+        snprintf(sm, sizeof sm, "STEPS,%d", moved);
+        send_orientation(ori);
+        send_message(sm);
+        haz_reset();
+        g_black_run = 0;
+        rotate_to_heading(ori, lane_heading + 180.0f);  // face the reverse lane
+        send_orientation(ori);                          // ORT for the new lane heading
+        return 1;
+    }
+
+    // Blocked: run the hazard handler, drop any stale cliff latch, then restore
+    // the lane heading (absolute) so the caller can try the other side cleanly.
+    // (No haz_note() here — the main-hop hazard already counted; counting each
+    // blocked sidestep would trip escape_trap prematurely.)
+    if (r == ADV_BLACK)         handle_black(ori);
+    else if (r == ADV_MOUNTAIN) avoid_mountain(ori);
+    if (g_black) g_black_ack();
+    rotate_to_heading(ori, lane_heading);
+    return 0;
+}
+
+// ------------------------------------------------------
 // Top-level explore loop (the EXPLORE command).
 // ------------------------------------------------------
 static void run_explore(orientation_t *ori, Cal *cal)
 {
     log_msg("EXPLORE: start");
+    send_message("EXPLORE");          /* UI: mission started */
     g_stop = 0;
     haz_reset();                  // F3: start each EXPLORE with a clean hazard streak
     g_black_run = 0;              // F5: start each EXPLORE with a clean black-contact run
+    g_bous_hops         = 0;     // F2: reset hop budget
+    g_bous_sidestep_dir = 1;     // F2: start with CW sidestep preference
+    g_bous_blocked      = 0;     // F2: reset arena-exhaustion counter
     exp_mon_start();
 
     while (!g_stop)
@@ -823,10 +949,95 @@ static void run_explore(orientation_t *ori, Cal *cal)
         send_message(rm);
         send_orientation(ori);
 
+        /* Gap-2: per-cycle sweep result → UI renders object dots each cycle */
+        {
+            char sm[64];
+            snprintf(sm, sizeof sm, "OBJN,%d", n);
+            send_message(sm);
+            for (int _gi = 0; _gi < n; _gi++)
+            {
+                snprintf(sm, sizeof sm, "OBJ,%.1f,%d",
+                         objs[_gi].rel_deg, (int)objs[_gi].dist_mm);
+                send_message(sm);
+            }
+        }
+
         if (n == 0)
         {
-            if (!advance_with_escape(ori)) break;   // F3: hop + trap detection
-            continue;
+            // F2: boustrophedon coverage — advance until boundary, then sidestep.
+            // Counts toward the global hop budget (guarantees termination).
+
+            // Termination path 2: hop budget exhausted (hard bound, fires last).
+            if (g_bous_hops >= EXP_BOUS_HOP_BUDGET)
+            {
+                log_msg("BOUS: hop budget exhausted (%d) -> EXPLORE_DONE", EXP_BOUS_HOP_BUDGET);
+                break;
+            }
+            g_bous_hops++;
+
+            // --- Try to advance one hop in the current lane direction ---
+            int moved = 0;
+            int r = advance_monitored(ori, EXP_ADVANCE_MM, &moved);
+
+            if (r == ADV_STOP) break;
+
+            if (r == ADV_DONE && moved > 0)
+            {
+                // Successful hop: emit STEPS for UI-feedback gap 8 (moved directly, not *MOVE_UNIT).
+                char sm[32];
+                snprintf(sm, sizeof sm, "STEPS,%d", moved);
+                send_message(sm);
+                send_orientation(ori);
+                haz_reset();
+                g_black_run   = 0;
+                g_bous_blocked = 0;     // made forward progress -> not exhausted
+                continue;   // sweep at the new position (back to top of while loop)
+            }
+
+            // Hop was blocked (moved==0 or ADV_BLACK/ADV_MOUNTAIN) → lane boundary.
+            // Capture the lane heading BEFORE the hazard handler rotates the body
+            // (handle_black turns ~90° interior on its own); the sidestep targets
+            // this absolute heading so it steps laterally, not into the interior.
+            float lane_heading = get_heading(ori);
+            if (r == ADV_BLACK)         { handle_black(ori);   haz_note(); }
+            else if (r == ADV_MOUNTAIN) { avoid_mountain(ori); haz_note(); }
+            // ADV_DONE with moved==0: boundary immediately ahead, no hazard handler needed.
+            if (g_black) g_black_ack();   // drop any stale cliff latch before re-aiming the sidestep
+
+            // Termination path 3: inescapable corner — existing trap give-up.
+            if (haz_stuck() && escape_trap(ori) == ADV_STOP) break;
+
+            // --- Sidestep into the next lane: preferred direction, then alternate ---
+            float dir1 =  g_bous_sidestep_dir * 90.0f;   // e.g. +90 = CW
+            float dir2 = -g_bous_sidestep_dir * 90.0f;   // e.g. -90 = CCW
+
+            if (bous_sidestep(ori, lane_heading, dir1))
+            {
+                g_bous_sidestep_dir = -g_bous_sidestep_dir;  // alternate for symmetry
+                g_bous_blocked      = 0;
+                continue;   // sweep at the new lane start
+            }
+            if (g_stop) break;
+
+            if (bous_sidestep(ori, lane_heading, dir2))
+            {
+                g_bous_sidestep_dir = -g_bous_sidestep_dir;  // concave / asymmetric boundary
+                g_bous_blocked      = 0;
+                continue;
+            }
+            if (g_stop) break;
+
+            // Both lateral lanes blocked. In a convex arena this means the reachable
+            // strip is covered; in a concave one a single corner can falsely look
+            // exhausted, so require EXP_BOUS_EXHAUST_LANES consecutive both-blocked
+            // events, and between them try a trap-escape to relocate to open space.
+            if (++g_bous_blocked >= EXP_BOUS_EXHAUST_LANES)
+            {
+                log_msg("BOUS: %d consecutive blocked lanes -> EXPLORE_DONE", g_bous_blocked);
+                break;                                  // Termination path 1: arena exhausted
+            }
+            if (escape_trap(ori) == ADV_STOP) break;    // could not relocate -> done/stopped
+            continue;                                   // relocated -> resume coverage
         }
 
         // immutable copy of the first sweep (true-origin frame) for drift estimation each hop
@@ -836,10 +1047,19 @@ static void run_explore(orientation_t *ori, Cal *cal)
         for (int k = 0; k < n && !g_stop; k++)
         {
             exp_rotate_rel(ori, objs[k].rel_deg);
+            send_orientation(ori);   // face the rock BEFORE approaching, so the STEPS trail
+                                     // and the FOUND_ROCK dot land at the correct map position
 
             int moved = 0, r = approach_object(ori, &moved);
             if (r == ADV_STOP) break;
             if (r == ADV_BLACK) { handle_black(ori); haz_note(); return_to_origin(ori, origin_heading, moved); continue; }
+            /* Gap-5: marker drives to rock (consistent with O/FB: emit moved, not moved*MOVE_UNIT) */
+            {
+                char _stp[64];
+                snprintf(_stp, sizeof _stp, "STEPS,%d", moved);
+                send_message(_stp);
+                send_orientation(ori);
+            }
 
             enum e_rock_color col = NONE;
             float temp = TEMP_INVALID;
@@ -861,6 +1081,13 @@ static void run_explore(orientation_t *ori, Cal *cal)
             }
 
             return_to_origin(ori, origin_heading, moved);
+            /* Gap-6: marker returns along trail */
+            {
+                char _stp[64];
+                snprintf(_stp, sizeof _stp, "STEPS,%d", -moved);
+                send_message(_stp);
+                send_orientation(ori);
+            }
             if (g_black) { handle_black(ori); haz_note(); continue; }
 
             // re-sweep loop-closure: re-acquire the remaining targets + correct heading drift

@@ -60,9 +60,15 @@ The robot repeats a simple, careful cycle:
    up straight is more accurate than turning around).
 5. **Look again** before moving on. By re-spotting objects it already knows, it can correct small
    errors that have crept into its sense of where it is — using those objects as landmarks.
-6. **Step into new ground.** If the scan found nothing new, it drives forward a short way and repeats.
+6. **Step into new ground systematically.** If the scan found nothing new, it drives forward a short
+   way, and when it reaches the boundary it steps sideways one robot-width and drives back the other
+   direction — a lawnmower pattern that guarantees the whole arena is covered.
 
-This loop continues until it's told to stop.
+This loop continues until the arena is fully covered — the robot can no longer step into new
+ground in either sideways direction — or the operator stops it. It then **stops on its own**, rather
+than driving forward indefinitely as the earlier version did. Throughout, the live map on the ground
+station shows the robot's marker advancing lane by lane, and it still sweeps for and classifies rocks
+at every position.
 
 ## How it measures a rock
 
@@ -83,6 +89,24 @@ It also handles two trickier situations: if a **mountain** blocks the way, it ba
 until the path is clear; and if it gets **boxed into a corner** — pinned between a cliff and an
 obstacle — it does a careful scan for the most open direction and commits to a longer move to break
 free, giving up gracefully (and stopping) if there's genuinely no way out.
+
+The robot also monitors for cliff/boundary tape during sideways shuffle manoeuvres. If the downward
+colour sensor detects the black boundary tape while the robot is strafing sideways around a mountain,
+the robot stops immediately and defers to its normal cliff-recovery routine. This closes a previously
+known safety gap where a mountain near the arena boundary could cause the robot to strafe off the edge.
+
+## What the operator sees on the ground station
+
+When EXPLORE starts, the ground station immediately shows **"[EXPLORE] mission started"** in the
+log. As the robot sweeps each position, detected rocks appear as green dots on the map — every
+cycle, not just at the end. When the robot drives to a rock the marker moves forward on the map;
+when it returns it retraces the path backward. After each forward hop (when the sweep found
+nothing) the marker advances on the map. If the robot gets trapped in a corner, the log shows
+**[TRAP] escaping** (amber), then **[TRAP_OK] escaped** (cyan) or **[TRAP_FAIL] mission stopped**
+(red) if all attempts fail. If the heading drifts and the re-sweep corrects it, the log shows
+**[DRIFT] heading corrected X° from N refs** (amber) — this appears every time a correction is
+applied, not only during the RSC test command. The RSC test command now shows the same green
+rock-dot display as a normal sweep.
 
 ## The bigger picture
 

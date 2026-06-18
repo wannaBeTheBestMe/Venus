@@ -88,28 +88,64 @@ diagnostic commands (`EXP1`/`ADV`/`SWEEPQ`) where the monitor safely re-asserts 
 on the fast `SPEED_FAST` moves).
 
 ## 6. The EXPLORE algorithm (`run_explore`, loops until operator `S`)
+On entry: emits `EXPLORE` (UI shows mission started).
 1. **Sweep.** From the current pose ("scan origin"), rotate **in place through 180°** about the
    current heading, in fine increments; the forward sensor profiles the surroundings and the robot
    extracts **discrete objects** (bearing-relative-to-center + distance). Mark the scanned
-   semicircle explored (`REGION`).
+   semicircle explored (`REGION`). After each sweep: emits `OBJN,n` + per-object `OBJ,rel_deg,dist_mm`
+   (UI renders sweep dots every cycle, not just on SWEEPQ).
 2. **If objects found**, for each: rotate to its bearing → **approach** in two phases (monitored;
    `heading_update` silently re-aims at the object without disturbing tracked heading): coarse to
    **40 mm** at `SPEED_ULTRA_SLOW`, then a fine creep to **15 mm** at `SPEED_ULTRA_ULTRA_SLOW`
    (slowest), then a fixed open-loop **~5 mm** nudge so the **overhead sensor parks over the rock** → 
    **classify** (front color + overhead size). **Rock** → send `FOUND_ROCK,size,color`. **Mountain**
-   → run avoidance. Then **return to the scan origin** by **driving straight in reverse** along the
+   → run avoidance. After approach (ADV_DONE): emits `STEPS,moved` + `ORT` (UI marker drives to
+   rock). Then **return to the scan origin** by **driving straight in reverse** along the
    approach path (no about-face turn — eliminates the 180° turn error that skewed the return),
-   then restore heading. **Re-sweep loop-closure** (`resweep_correct`): after each return, sweep
-   again and match the still-present rocks against the original sweep — **refresh** the
-   not-yet-visited objects' bearings from the new sweep (so the next approach aims where the rock
-   actually is now, robust to rotation **and** small position drift) and, when ≥2 rocks match, apply
-   the **median bearing offset** to the tracked heading so `ori`/UI stay truthful and the next return
-   physically re-centres. When ≥2 non-collinear matched pairs are available (bearing spread ≥20°), it
-   also computes a **translation fix** (`POSFIX,dx_mm,dy_mm`): the least-squares mean of the per-pair
-   displacement vectors in the robot's local frame (dx=right, dy=fwd). Emitted during `RSC`
-   diagnostics; the UI handler applies it to the tracked robot position. Collinear rock geometry
-   (spread <20°) is logged as "unobservable, skipped" and no fix is applied. Then continue.
-3. **If none**, drive **forward ~300 mm** (monitored) and loop.
+   then restore heading. After normal return: emits `STEPS,-moved` + `ORT` (UI marker retraces back
+   along the trail; negative sign drives the marker in reverse). **Re-sweep loop-closure**
+   (`resweep_correct`): after each return, sweep again and match the still-present rocks against the
+   original sweep — **refresh** the not-yet-visited objects' bearings from the new sweep (so the next
+   approach aims where the rock actually is now, robust to rotation **and** small position drift) and,
+   when ≥2 rocks match, apply the **median bearing offset** to the tracked heading so `ori`/UI stay
+   truthful and the next return physically re-centres; emits `DRIFT,deg,n` unconditionally when
+   correction is applied (both in-loop and RSC paths). When ≥2 non-collinear matched pairs are
+   available (bearing spread ≥20°), it also computes a **translation fix** (`POSFIX,dx_mm,dy_mm`):
+   the least-squares mean of the per-pair displacement vectors in the robot's local frame (dx=right,
+   dy=fwd). Emitted during `RSC` diagnostics; the UI handler applies it to the tracked robot
+   position. Collinear rock geometry (spread <20°) is logged as "unobservable, skipped" and no fix
+   is applied. Then continue.
+3. **If none** — F2 boustrophedon (lawnmower) coverage:
+   1. **Lane run:** advance in `EXP_ADVANCE_MM` (300 mm) hops via `advance_monitored` until a
+      boundary cliff (`ADV_BLACK`) or mountain (`ADV_MOUNTAIN`) blocks progress, or until the hop
+      budget (`EXP_BOUS_HOP_BUDGET = 60`) is reached. On each successful hop (ADV_DONE, moved>0):
+      emits `STEPS,moved` + `ORT` (UI marker advances one hop).
+   2. **Lane transition:** at each boundary, capture the lane heading *before* the hazard handler runs
+      (`lane_heading = get_heading(ori)`), run the existing hazard handler (recoil + interior turn),
+      `g_black_ack()` any stale cliff latch, then call `bous_sidestep(ori, lane_heading, ±90°)`. The
+      sidestep targets **absolute** headings via `rotate_to_heading`: it turns to `lane_heading ± 90°`
+      (a true lateral step), advances one `EXP_ADVANCE_MM` lateral hop (`advance_monitored`,
+      cliff-safe), then turns to face the reversed lane (`lane_heading + 180°`). On success it emits
+      `ORT` **then** `STEPS,moved` (so the marker steps in the lateral heading) and alternates the
+      preferred direction so coverage is symmetric. On a blocked sidestep the hazard is handled, the
+      latch cleared, and `lane_heading` restored so the opposite direction is tried cleanly.
+      *(Targeting the pre-hazard `lane_heading` is what makes this a true lawnmower, not an inward
+      spiral: `handle_black` rotates the body ~90° on its own, so a delta-based turn would compound.)*
+   3. **Termination — `EXPLORE_DONE`:**
+      - *Primary:* both sidestep directions blocked for `EXP_BOUS_EXHAUST_LANES` (2) **consecutive**
+        lane-ends — arena exhausted; logs `BOUS: N consecutive blocked lanes`. Between the first such
+        event and the limit, `escape_trap` relocates the robot to open space and coverage resumes; the
+        `g_bous_blocked` counter resets on any forward hop or successful sidestep (so a concave corner
+        doesn't falsely declare the arena done).
+      - *Secondary:* `g_bous_hops >= EXP_BOUS_HOP_BUDGET` (60) — hard budget bound (guarantees a stop
+        even on a logic error; logs `BOUS: hop budget exhausted`).
+      - *Tertiary:* existing `escape_trap` give-up (`EXP_TRAP_MAX_TRIES` exceeded) — inescapably
+        cornered; returns `ADV_STOP`.
+      - *Operator S/HOLD:* `g_stop` set inside `advance_monitored`/`exp_check()`.
+      All `break` paths fall through to the single `EXPLORE_DONE` emit.
+   The lane transition targets **absolute headings** off the pre-hazard `lane_heading` (via
+   `rotate_to_heading`), so `handle_black`'s own ~90° interior turn cannot corrupt the lateral
+   direction. No raw `stepper_steps` anywhere in the new code.
 
 **Hazard handlers:**
 - **Cliff** (`handle_black`): halt immediately (cancel in-flight steps **first**), log a 10×10 cm
@@ -122,12 +158,21 @@ on the fast `SPEED_FAST` moves).
   streak = cliff+mountain trap detector, run = black-only continuation hint).
 - **Mountain** (`avoid_mountain`): back up, report, **shuffle sideways**, re-check forward; repeat
   until clear.
+  > **BUG-2 fix (2026-06-18):** `shuffle_sideways` (and its sub-primitives `steps_blocking`,
+  > `shuffle_step_left`, `shuffle_step_right`) are now cliff-gated. `steps_blocking` polls `g_black`
+  > inside its wait loop and calls `stepper_halt()` on detection. `shuffle_sideways` clears the stale
+  > latch once at entry (matching the `escape_scan` / `g_black_ack` discipline) then returns 1 on
+  > abort. `avoid_mountain` breaks immediately on a black hit rather than continuing to strafe. All
+  > callers (`avoid_mountain`, `SHL`, `SHR`, `MTN`) are covered by the single primitive gate. The
+  > sideways strafe is now as cliff-safe as the forward motion primitives.
 - **Trap/corner escape** (`escape_trap`, F3): consecutive hazards without net forward progress
   (`g_haz_streak` ≥ `EXP_TRAP_HAZ_LIMIT`) mean the robot is boxed in / ping-ponging between the cliff and
   mountain handlers. It then runs a **bounded in-place open-direction scan** (`escape_scan`: pivots ±90°,
   returning to centre between halves so it never circles past an unknown black streak), rotates to the
   **most-open heading**, and commits a longer (`EXP_TRAP_COMMIT_MM`) monitored move to break out. Bounded
-  by `EXP_TRAP_MAX_TRIES` — on give-up it stops the run. Emits `TRAP` / `TRAP_OK` / `TRAP_FAIL`.
+  by `EXP_TRAP_MAX_TRIES` — on give-up it stops the run. Emits `TRAP` / `TRAP_OK` / `TRAP_FAIL`. UI
+  handlers added (UIFB): `TRAP` → amber "[TRAP] escaping", `TRAP_OK` → cyan "[TRAP_OK] escaped",
+  `TRAP_FAIL` → red "[TRAP_FAIL] mission stopped" (previously emitted but silently ignored by the UI).
 
 ## 7. Sweep object detection (the subtle part)
 The forward cone smears each object across ~25°, so naive "any in-range run = one object" merges
@@ -207,9 +252,14 @@ systematic error, fixed in F8) ·
 `BLACKPT,heading,run` (F5; per black contact, paired with `NOGO`, additive — heading in deg,
 run = consecutive-black count) ·
 `POSFIX,dx_mm,dy_mm` (F4 translation fix; dx=right, dy=fwd, mm, ints; non-collinear rocks only) ·
-`TRAP`/`TRAP_OK`/`TRAP_FAIL` (F3 trap-escape status) ·
+`EXPLORE` (UIFB; autonomous mission started — UI shows "[EXPLORE] mission started") ·
+`DRIFT,deg,n` (UIFB; heading corrected by re-sweep, emitted unconditionally when nd≥MIN_REFS, both
+in-loop and RSC paths; UI shows "[DRIFT] heading corrected X° from N refs" in amber) ·
+`TRAP`/`TRAP_OK`/`TRAP_FAIL` (F3 trap-escape status; UIFB: now handled by UI — amber/cyan/red) ·
 `HELLO,<id>` (optional boot identification ping near `READY`; advisory) ·
 `EXPLORE_DONE` · `LOG,<text>`.
+Note: `OBJN,n` / `OBJ,rel_deg,dist_mm` / `STEPS,n` / `ORT,ort,theta` now also apply within the
+EXPLORE command (not only SWEEPQ/O/FB/F) — see §6 emit notes.
 
 **Attribution:** each message is attributed by MQTT topic (Robot41 = `/pynqbridge/41/send`,
 Robot80 = `/pynqbridge/80/send`). Payloads are format-identical; `robot_name` is set by the

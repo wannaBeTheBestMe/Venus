@@ -896,12 +896,45 @@ class VenusDashboard(QMainWindow):
                 # boundary/cliff decision is drawn at EXPLORE_DONE.
                 self._draw_dot(c.x(), c.y(), AMBER, faint=True)
 
+            # --- EXPLORE: mission started ---
+            elif cmd == "EXPLORE":
+                self.log_widget.append(
+                    f"<span style='color:{CYAN};'>[EXPLORE] mission started.</span>")
+
             # --- EXPLORE: run finished ---
             elif cmd == "EXPLORE_DONE":
                 self.classify_black_contacts(st)   # F5: cluster + draw
                 st["black_contacts"] = []           # reset so next EXPLORE run starts clean
                 self.log_widget.append(
                     f"<span style='color:{CYAN};'>[EXPLORE] mapping run complete.</span>")
+
+            # --- EXPLORE: trap escape attempt ---
+            elif cmd == "TRAP":
+                self.log_widget.append(
+                    f"<span style='color:{AMBER};'>[TRAP] escaping — scanning for opening.</span>")
+
+            # --- EXPLORE: trap escape succeeded ---
+            elif cmd == "TRAP_OK":
+                self.log_widget.append(
+                    f"<span style='color:{CYAN};'>[TRAP_OK] escaped successfully.</span>")
+
+            # --- EXPLORE: trap escape failed, mission stopped ---
+            elif cmd == "TRAP_FAIL":
+                self.log_widget.append(
+                    f"<span style='color:{RED_ALERT};'>[TRAP_FAIL] escape failed — mission stopped.</span>")
+
+            # --- EXPLORE: heading drift corrected by re-sweep ---
+            elif cmd == "DRIFT":
+                try:
+                    drift_deg = float(parts[1]) if len(parts) > 1 else 0.0
+                    n_refs    = int(parts[2])   if len(parts) > 2 else 0
+                    self.log_widget.append(
+                        f"<span style='color:{AMBER};'>"
+                        f"[DRIFT] heading corrected {drift_deg:+.1f}° from {n_refs} refs"
+                        f"</span>")
+                except Exception:
+                    self.log_widget.append(
+                        f"<span style='color:{AMBER};'>[DRIFT] heading corrected</span>")
 
             # --- SWEEPQ: start of a new object list -> clear the previous sweep markers ---
             elif cmd == "OBJN":
