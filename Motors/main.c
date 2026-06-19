@@ -210,6 +210,12 @@ int main(void)
                 }
             }
 
+           else if(strcmp(MSG,"A") == 0)
+            {
+                int dist = vl53_read_distance_calibrated(VL53_FRONT_CHANNEL,FRONT_OFFSET_MM);
+                
+                object_measurement_sequence(dist);
+            }
 
             else
             {
