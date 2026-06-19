@@ -1,0 +1,27 @@
+[Unit]
+Description=Venus F1 robot firmware autostart (run-on-boot, no cable)
+After=multi-user.target
+Wants=multi-user.target
+# Crash-loop guard: at most 5 starts per 60s, then stop and leave the unit failed
+# (so a hardware-init failure doesn't thrash the FPGA/steppers indefinitely).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=student
+WorkingDirectory=/home/student/libpynq-5EID0-2023-v0.3.0/applications/motors_newest
+# Conservative cold-boot settle so the FPGA overlay / I2C / ADC / ESP32 bridge are
+# powered and enumerated before pynq_init(). The firmware adds its own 3s settle.
+# Tune down (toward ~8-10s) from journal power->READY timings once measured.
+ExecStartPre=/bin/sleep 15
+ExecStart=/home/student/libpynq-5EID0-2023-v0.3.0/applications/motors_newest/student-startup.sh
+Restart=on-failure
+RestartSec=3
+# No controlling TTY: the firmware reads operator input over UART0 hardware, not stdin.
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

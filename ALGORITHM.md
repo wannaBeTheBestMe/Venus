@@ -10,8 +10,11 @@
 ## 1. The system
 A **PYNQ-Z2** drives a **differential-drive robot** (two stepper wheels + trailing caster).
 Firmware is C on **libpynq**, in `motors_newest/` (`main.c`, `main_header.h`, `explore.h`,
-`3_sensors_header.h`, `shuffle.h`). The robot is **autonomous on boot**: `student-startup.sh`
-launches `./main` on power-up (systemd unit `student-startup.service`, no cable), and after `READY`
+`3_sensors_header.h`, `shuffle.h`). The robot is **autonomous on boot** once the boot service is
+installed+enabled: the launcher `student-startup.sh` + systemd unit `student-startup.service` are
+defined in `motors_newest/` and installed on a board via `install-startup-service.sh` (enabling is a
+deliberate motion-safe step — a calibrated reboot drives within ~8 s). It launches `./main` on
+power-up (no cable), and after `READY`
 — provided a calibration is loaded — the robot **auto-enters EXPLORE** following a ~5 s
 settle/opt-out window during which the laptop only listens. A wireless `S`/`HOLD` in that window
 drops to the interactive UART command loop instead; uncalibrated boots skip autorun and fall through
@@ -246,7 +249,8 @@ Live contacts show as faint amber dots as they arrive.
   loaded) the robot auto-enters EXPLORE following a ~5 s settle window; a wireless `S`/`HOLD` during
   that window opts out to manual command mode (uncalibrated boots skip autorun). An optional
   `HELLO,<id>` may be emitted near `READY` (advisory; attribution is topic-based). The run-on-boot
-  launcher is `student-startup.sh` (systemd unit `student-startup.service`).
+  launcher is `student-startup.sh`, wired to boot by the systemd unit `student-startup.service`
+  (both in `motors_newest/`; install via `install-startup-service.sh`, then `enable` per the staged test).
 - **Logging:** `LOGON`/`LOGOFF` toggle the wireless `LOG` mirror (off for the scored demo).
 
 ### Message protocol (firmware → UI), selected

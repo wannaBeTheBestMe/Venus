@@ -7,6 +7,14 @@ LOG="$HOME/student-startup.log"
 
 cd "$APP_DIR" || { echo "$(date): app dir not found: $APP_DIR" >>"$LOG"; exit 1; }
 
+# Single-instance guard: the libpynq hardware can be opened only once. If a ./main
+# is already running (e.g. a manual bench launch), stand down quietly rather than
+# fight for the hardware or trip the service's on-failure restart loop.
+if pgrep -x main >/dev/null 2>&1; then
+    echo "$(date): ./main already running (pid $(pgrep -x main | tr '\n' ' ')) - not starting a 2nd instance" >>"$LOG"
+    exit 0
+fi
+
 # Optional: rebuild if the binary is missing (normally pre-built by `make`).
 if [ ! -x ./main ]; then
     echo "$(date): ./main missing, attempting build" >>"$LOG"
