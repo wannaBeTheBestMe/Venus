@@ -15,7 +15,9 @@
 #define VL53L0X_ADDR 0x29
 #define SYSRANGE_START       0x00
 #define RESULT_RANGE_STATUS  0x14
-#define CALIBRATION_OFFSET_MM  -27
+// #define CALIBRATION_OFFSET_MM  -27
+#define FRONT_OFFSET_MM   -27
+#define HEIGHT_OFFSET_MM  -12
 
 
 #define RED_MIN    25
@@ -39,6 +41,11 @@
 #define PCA9548A_ADDR 0x70
 #define SENSOR_ADDR   0x29
 
+// MUX Channels
+#define TCS_CHANNEL        0
+#define VL53_FRONT_CHANNEL 1
+#define VL53_HEIGHT_CHANNEL 2
+
 // TCS3472
 #define TCS_REG_ID      0x92
 #define TCS_REG_ENABLE  0x80
@@ -52,7 +59,7 @@
 #define VL53_DISTANCE_REG  0x1E
 #define VL53_CLEAR_INT     0x0B
 
-#define CALIBRATION_OFFSET_MM -27
+#define HEIGHT_SENSOR_MOUNT_MM 100
 
 
 void read_uart_message(uart_index_t uart, char msg[])
@@ -486,6 +493,41 @@ bool mux_select_channel(uint8_t channel)
      return 0;
 }
 
+int vl53_read_distance_from_channel(int channel);
+int vl53_read_distance_calibrated(int channel, int offset)
+{
+    int sum = 0;
+    int count = 0;
+
+    for(int i = 0; i < 5; i++)
+    {
+        int d = vl53_read_distance_from_channel(channel);
+
+        if(d > 0 && d < 1200)
+        {
+            sum += d;
+            count++;
+        }
+
+        sleep_msec(30);
+    }
+
+    if(count == 0)
+    {
+        return -1;
+    }
+
+    int avg = sum / count;
+    avg += offset;
+
+    if(avg < 0)
+    {
+        avg = 0;
+    }
+
+    return avg;
+}
+
 void tcs_write8(uint8_t reg, uint8_t value)
 {
     iic_write_register(IIC0, SENSOR_ADDR, reg, &value, 1);
@@ -493,15 +535,17 @@ void tcs_write8(uint8_t reg, uint8_t value)
 
 int tcs_init(void)
 {
+    tcs_channel = TCS_CHANNEL;
+
     mux_select_channel(tcs_channel);
 
-    tcs_write8(TCS_REG_ENABLE, 0x03);   // power ON + ADC enable
-    tcs_write8(TCS_REG_ATIME, 0x00);    // integration time
-    tcs_write8(TCS_REG_CONTROL, 0x00);  // 1x gain
+    tcs_write8(TCS_REG_ENABLE, 0x03);
+    tcs_write8(TCS_REG_ATIME, 0x00);
+    tcs_write8(TCS_REG_CONTROL, 0x00);
 
     sleep_msec(1300);
 
-    printf("TCS3472 initialized\n");
+    printf("TCS3472 initialized on channel %d\n", tcs_channel);
     return 0;
 }
 
@@ -530,27 +574,15 @@ int vl53_init(void)
 {
     uint8_t start = 0x01;
 
-    mux_select_channel(vl53_channel);
+    mux_select_channel(VL53_FRONT_CHANNEL);
     sleep_msec(5);
+    iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &start, 1);
 
-    if (iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &start, 1)) {
-        printf("VL53 #1 start error\n");
-        return 1;
-    }
+    mux_select_channel(VL53_HEIGHT_CHANNEL);
+    sleep_msec(5);
+    iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &start, 1);
 
-    printf("VL53 #1 initialized on channel %d\n", vl53_channel);
-
-    if (vl53_channel2 >= 0) {
-        mux_select_channel(vl53_channel2);
-        sleep_msec(5);
-
-        if (iic_write_register(IIC0, SENSOR_ADDR, VL53_SYSRANGE, &start, 1)) {
-            printf("VL53 #2 start error\n");
-            return 1;
-        }
-
-        printf("VL53 #2 initialized on channel %d\n", vl53_channel2);
-    }
+    printf("VL53 sensors initialized on channels 1 and 2\n");
 
     return 0;
 }
@@ -578,7 +610,7 @@ int vl53_read_distance_from_channel(int channel)
 
     int distance = ((int)data[0] << 8) | data[1];
 
-    distance += CALIBRATION_OFFSET_MM;
+    // distance += CALIBRATION_OFFSET_MM;
 
     if (distance < 0) {
         distance = 0;
@@ -588,6 +620,30 @@ int vl53_read_distance_from_channel(int channel)
     iic_write_register(IIC0, SENSOR_ADDR, VL53_CLEAR_INT, &clear, 1);
 
     return distance;
+}
+
+void object_measurement_sequence(int front_dist)
+{
+    printf("Front distance = %d mm\n", front_dist);
+
+    // printf("Object detected in range 30-40 mm\n");
+
+    int height_dist =
+        vl53_read_distance_calibrated(VL53_HEIGHT_CHANNEL,HEIGHT_OFFSET_MM);
+
+    int object_height = HEIGHT_SENSOR_MOUNT_MM - height_dist;
+
+    if(object_height < 0)
+    {
+        object_height = 0;
+    }
+
+    printf("Height sensor distance = %d mm\n", height_dist);
+    printf("Object height = %d mm\n", object_height);
+
+    tcs_read_rgb();
+
+    printf("Measurement sequence complete\n");
 }
 
 int vl53_read_distance(void)
@@ -626,15 +682,27 @@ static int sweep_right_for_object(orientation_t *ori)
 
         printf("DIST = %d mm\n", dist);
 
-        if(dist > 0 && dist < 300)
+        // if(dist > 0 && dist < 300)
+        // {
+        //     printf("OBJECT DETECTED\n");
+
+        //     printf("TARGET HEADING = %.2f\n",
+        //            get_heading(ori));
+
+        //     return dist;
+        //     break;
+        // }
+
+        if(dist >= 30 && dist <= 50)
         {
-            printf("OBJECT DETECTED\n");
+            printf("OBJECT DETECTED 30-40 mm\n");
+
+            object_measurement_sequence(dist);
 
             printf("TARGET HEADING = %.2f\n",
-                   get_heading(ori));
+            get_heading(ori));
 
-            return dist;
-            break;
+                return dist;
         }
 
         if(ori->theta >= 89.0f)

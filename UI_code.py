@@ -208,7 +208,7 @@ class VenusDashboard(QMainWindow):
 
     # ---------------- UI ----------------
     def setup_map_panel(self, parent_layout):
-        group = QGroupBox("TACTICAL MAP")
+        group = QGroupBox("MAP")
         layout = QVBoxLayout(group)
         self.scene = QGraphicsScene(-150 * SCALE, -150 * SCALE, 300 * SCALE, 300 * SCALE)
         self.view = QGraphicsView(self.scene)
@@ -231,25 +231,25 @@ class VenusDashboard(QMainWindow):
         parent_layout.addWidget(group, stretch=1)
 
     def setup_telemetry_panel(self, parent_layout):
-        group = QGroupBox("TELEMETRY")
+        group = QGroupBox("ROBOTS")
         layout = QVBoxLayout(group)
 
-        self.status_41_label = QLabel("OFFLINE")
-        self.pos_41_label = QLabel("X: --- | Y: ---")
-        layout.addWidget(QLabel(f"<span style='color:{CYAN};'>■</span> UNIT_41 [ALPHA]"))
+        self.status_41_label = QLabel("-")
+        self.pos_41_label = QLabel("")
+        layout.addWidget(QLabel(f"<span style='color:{CYAN};'>■</span> ROBOT_41"))
         layout.addWidget(self.status_41_label)
         layout.addWidget(self.pos_41_label)
 
-        self.status_80_label = QLabel("OFFLINE")
-        self.pos_80_label = QLabel("X: --- | Y: ---")
-        layout.addWidget(QLabel(f"<br><span style='color:{MAGENTA};'>■</span> UNIT_80 [BRAVO]"))
+        self.status_80_label = QLabel("-")
+        self.pos_80_label = QLabel("")
+        layout.addWidget(QLabel(f"<br><span style='color:{MAGENTA};'>■</span> ROBOT_80"))
         layout.addWidget(self.status_80_label)
         layout.addWidget(self.pos_80_label)
 
         parent_layout.addWidget(group)
 
     def setup_findings_panel(self, parent_layout):
-        group = QGroupBox("ANOMALY LOG")
+        group = QGroupBox("OBJECTS FOUND")
         layout = QVBoxLayout(group)
         self.findings_list = QListWidget()
         layout.addWidget(self.findings_list)
@@ -259,10 +259,10 @@ class VenusDashboard(QMainWindow):
         group = QGroupBox("SYS_COMMS")
         layout = QVBoxLayout(group)
         
-        btn_fit = QPushButton("CALIBRATE VIEW")
+        btn_fit = QPushButton("ZOOM OUT")
         btn_fit.clicked.connect(self.zoom_to_fit)
         
-        btn_clear = QPushButton("PURGE DATA")
+        btn_clear = QPushButton("CLEAR DATA")
         btn_clear.clicked.connect(self.clear_all)
         
         layout.addWidget(btn_fit)
