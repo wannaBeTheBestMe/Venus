@@ -44,6 +44,10 @@ typing commands during the run.
 - An **overhead sensor** that gauges an object's **size** once the robot is right up against it.
 - A **colour sensor** and a **temperature sensor** for measuring each rock.
 
+The same software runs on two slightly different robots — they wire their sensors up differently
+inside — and it figures out which kind it's on automatically when it powers up, so one program serves
+both.
+
 The robot has no screen of its own. It has a small radio link that sends its findings to a laptop
 "ground station" running the map software.
 

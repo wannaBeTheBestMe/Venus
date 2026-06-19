@@ -67,6 +67,17 @@ a mapping/visualization layer.
 - **Thermistor on ADC0** — rock **temperature** (°C; Steinhart-Hart). Read at the close/stop
   position during classification; standalone live readout via `TEMP` (loops until `S`).
 
+**Dual I2C-sensor backend (auto-detected at boot).** The three I2C sensors above (forward + overhead
+VL53L0X, color TCS34725 — all natively 0x29) are disambiguated one of two ways depending on the robot:
+**XSHUT** (re-address to 0x30/0x31 via XSHUT pins — the default/current robot) or a **PCA9548A I2C mux**
+at **0x70** (the older robot — all three at 0x29, selected by channel). `all_sensors_init` probes 0x70
+once: ACK → mux backend (`mux_scan_vl53_color` assigns roles by channel — **forward = lower VL53 channel,
+overhead = higher**, overridable via `~/sensor_channels` = `fwd oh [color]`), NAK → XSHUT backend. The
+mission code is unchanged — only the transport inside the `read_distance_*`/`read_color` helpers branches
+(`vl53_read_raw_mm`). The downward TCS3200 (cliff) and thermistor are **not** on the mux. Verify the mux
+robot's forward/overhead mapping with the `MUXMAP` command (~200 mm from a wall → forward ≈ 200, overhead
+OOR). The boot log prints `SENSOR BACKEND: MUX (fwd chN / oh chM / color chK)` or `XSHUT`.
+
 ## 4. Low-level conventions
 - **Stepper motion is non-blocking** and buffers only one "next" command — issuing faster than
   steps execute silently drops them. Two helpers tame this (`main_header.h`):
