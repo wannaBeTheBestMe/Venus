@@ -103,6 +103,10 @@ int main(void)
     switchbox_set_pin(IO_AR0, SWB_UART0_RX);
     switchbox_set_pin(IO_AR1, SWB_UART0_TX);
 
+    // Set IIC0 switchbox pins BEFORE iic_init so the bus is valid for the
+    // 0x70 mux probe in all_sensors_init() (parity with Motors/main.c).
+    switchbox_set_pin(IO_AR_SCL, SWB_IIC0_SCL);
+    switchbox_set_pin(IO_AR_SDA, SWB_IIC0_SDA);
     iic_init(IIC0);
 
     adc_init();   // thermistor (rock temperature) on ADC0
@@ -566,7 +570,9 @@ int main(void)
             {
                 // sweep_right_until_wall();
 		// sweep_right_for_object();
+		turn_guard_begin();   // suspend cliff-latching during the in-place scan (side-tape false latch)
 		sweep_right_for_object(&ori);
+		turn_guard_end();
 		send_orientation(&ori);
             }
 
@@ -666,7 +672,14 @@ int main(void)
 		// Should back up a little first to not displace the current object?
 
 	        // RSWEEP (now a 180-deg symmetric scan; restores heading to center on no-object)
+		// Suspend cliff-latching during this in-place scan: the forward-mounted down
+		// sensor sweeps over side/behind tape not in the travel path, which would
+		// latch a spurious g_black and abort the approach below. sweep_right_for_object
+		// does no g_black check itself; turn_guard_end clears it so approach_object
+		// starts clean (monitor re-confirms a real ahead-cliff before it translates).
+		turn_guard_begin();
 		int sweep_dist = sweep_right_for_object(&ori);
+		turn_guard_end();
 		print_orientation(&ori);
 		send_orientation(&ori);
 
@@ -993,6 +1006,34 @@ int main(void)
                 }
                 wait_motion(500);
             }
+        }
+
+        // ---- diagnostic: report mux channel mapping + live distances ----
+        // Only meaningful on the mux robot; on XSHUT it logs XSHUT and -1 channels.
+        // Usage: MUXMAP → log shows role→channel map + one forward + overhead read.
+        // Bench gate: forward ≈200 mm from a wall, nothing overhead → forward≈200, overhead OOR.
+        // If swapped, write "forward_ch overhead_ch [color_ch]" to ~/sensor_channels.
+        else if (strcmp(MSG, "MUXMAP") == 0)
+        {
+            if (g_sensor_backend == BACKEND_MUX)
+            {
+                log_msg("MUXMAP: backend=MUX  fwd=ch%d  oh=ch%d  color=ch%d",
+                        g_ch_forward, g_ch_overhead, g_ch_color);
+            }
+            else
+            {
+                log_msg("MUXMAP: backend=XSHUT (fwd addr=0x%02X oh addr=0x%02X)",
+                        SENSOR2_ADDRESS, SENSOR1_ADDRESS);
+            }
+            int32_t fwd_mm = read_distance_forward();
+            int32_t oh_mm  = read_distance_overhead_simple();
+            char mmap_buf[96];
+            snprintf(mmap_buf, sizeof mmap_buf,
+                     "MUXMAP,fwd=%d,oh=%d", (int)fwd_mm, (int)oh_mm);
+            send_message(mmap_buf);
+            log_msg("MUXMAP: fwd=%d mm  oh=%d mm  (expect fwd≈200 + oh=-1 for wall test)",
+                    (int)fwd_mm, (int)oh_mm);
+            send_orientation(&ori);
         }
 
         // ---- wireless logging toggle (testing tool; LOGOFF for the demo) ----
