@@ -146,15 +146,13 @@ int main(void)
         .theta = 0.0f
     };
 
-    gpio_set_direction(S0, GPIO_DIR_OUTPUT);
-    gpio_set_direction(S1, GPIO_DIR_OUTPUT);
-    gpio_set_direction(S2, GPIO_DIR_OUTPUT);
-    gpio_set_direction(S3, GPIO_DIR_OUTPUT);
-
-    gpio_set_direction(SENSOR_OUT, GPIO_DIR_INPUT);
-
-    gpio_set_level(S0, GPIO_LEVEL_HIGH);
-    gpio_set_level(S1, GPIO_LEVEL_LOW);
+    // Initialise TCS3200 via module API: sets pin dirs + S0/S1.
+    // Original inline init drove S0=HIGH, S1=LOW. Per TAOS datasheet Table 1 that
+    // is the 20 % output setting, so we pass TCS3200_SCALING_20PCT — which drives
+    // exactly S0=HIGH/S1=LOW. Boot GPIO levels are therefore byte-identical to the
+    // old code; detect_black's calibrated thresholds were tuned at these levels and
+    // must not change. (Replaces the former inline gpio_set_* block.)
+    tcs3200_begin(S0, S1, S2, S3, SENSOR_OUT, TCS3200_SCALING_20PCT);
 
     uint16_t c, r, g, b;
 
@@ -1055,6 +1053,153 @@ int main(void)
             cal_black_thresh = 150;
             cal_forget();   // delete the saved file so reboot uses defaults too
             log_msg("CAL reset to defaults (saved calibration cleared)");
+        }
+
+        // ================================================================
+        // TCS3200 demo/diagnostic commands (added by tcs3200 feature-parity
+        // refactor). These pause the cliff monitor while reading, then
+        // restore it, exactly like CALBLACK does for raw TCS3200 access.
+        // ================================================================
+
+        // RGB — read all three colour channels (0-255 each, calibrated).
+        else if (strcmp(MSG, "RGB") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+            RGBColor c = tcs3200_read_rgb();
+            char buf[64];
+            snprintf(buf, sizeof buf, "RGB,%d,%d,%d", c.r, c.g, c.b);
+            send_message(buf);
+            if (mon_was_on) exp_mon_start();
+        }
+
+        // HSV — hue (0-360), saturation (0-1), value (0-1).
+        else if (strcmp(MSG, "HSV") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+            HSVColor h = tcs3200_read_hsv();
+            char buf[64];
+            snprintf(buf, sizeof buf, "HSV,%.1f,%.3f,%.3f", h.h, h.s, h.v);
+            send_message(buf);
+            if (mon_was_on) exp_mon_start();
+        }
+
+        // CMYK — cyan/magenta/yellow/key (0-1 each).
+        else if (strcmp(MSG, "CMYK") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+            CMYKColor k = tcs3200_read_cmyk();
+            char buf[80];
+            snprintf(buf, sizeof buf, "CMYK,%.3f,%.3f,%.3f,%.3f",
+                     k.c, k.m, k.y, k.k);
+            send_message(buf);
+            if (mon_was_on) exp_mon_start();
+        }
+
+        // SCALE,<0-3> — set frequency scaling (0=off, 1=2%, 2=20%, 3=100%).
+        else if (strncmp(MSG, "SCALE,", 6) == 0)
+        {
+            int sc = atoi(MSG + 6);
+            if (sc < 0 || sc > 3)
+            {
+                send_message("LOG,SCALE: arg must be 0-3 (0=off,1=2%,2=20%,3=100%)");
+            }
+            else
+            {
+                tcs3200_frequency_scaling(sc);
+                char buf[48];
+                snprintf(buf, sizeof buf, "LOG,SCALE set to %d", sc);
+                send_message(buf);
+            }
+        }
+
+        // INTEG,<n> — set integration time = median sample count (1-16).
+        else if (strncmp(MSG, "INTEG,", 6) == 0)
+        {
+            int n = atoi(MSG + 6);
+            tcs3200_integration_time(n);
+            char buf[48];
+            snprintf(buf, sizeof buf, "LOG,INTEG set to %d samples",
+                     tcs3200_integration_time_get());
+            send_message(buf);
+        }
+
+        // WB — capture white-balance reference from current reading.
+        else if (strcmp(MSG, "WB") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+            tcs3200_white_balance();
+            RGBColor wb = tcs3200_white_balance_get();
+            char buf[64];
+            snprintf(buf, sizeof buf, "WB,%d,%d,%d", wb.r, wb.g, wb.b);
+            send_message(buf);
+            if (mon_was_on) exp_mon_start();
+        }
+
+        // CHROMA — colour saturation / chroma value (float).
+        else if (strcmp(MSG, "CHROMA") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+            float ch = tcs3200_get_chroma();
+            char buf[32];
+            snprintf(buf, sizeof buf, "CHROMA,%.2f", ch);
+            send_message(buf);
+            if (mon_was_on) exp_mon_start();
+        }
+
+        // DOM — dominant channel (0=R, 1=G, 2=B).
+        else if (strcmp(MSG, "DOM") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+            int d = tcs3200_dominant();
+            const char *name = (d == TCS3200_RED) ? "RED" :
+                               (d == TCS3200_GREEN) ? "GREEN" : "BLUE";
+            char buf[32];
+            snprintf(buf, sizeof buf, "DOM,%s", name);
+            send_message(buf);
+            if (mon_was_on) exp_mon_start();
+        }
+
+        // NEAREST — classify current colour against the 5 arena colours.
+        // References: WHITE, BLACK, RED, GREEN, BLUE (enum e_rock_color).
+        else if (strcmp(MSG, "NEAREST") == 0)
+        {
+            int mon_was_on = g_mon_run;
+            exp_mon_stop();
+
+            static const RGBColor arena_refs[] = {
+                {255, 255, 255},   // WHITE
+                {  5,   5,   5},   // BLACK
+                {200,  30,  30},   // RED
+                { 30, 200,  30},   // GREEN
+                { 30,  30, 200},   // BLUE
+            };
+            static const int arena_ids[] = {
+                WHITE, BLACK, RED, GREEN, BLUE
+            };
+            int nearest_id = tcs3200_nearest_color(
+                arena_refs, arena_ids,
+                (int)(sizeof(arena_ids) / sizeof(arena_ids[0]))
+            );
+            const char *cname = "UNKNOWN";
+            switch (nearest_id)
+            {
+                case WHITE: cname = "WHITE"; break;
+                case BLACK: cname = "BLACK"; break;
+                case RED:   cname = "RED";   break;
+                case GREEN: cname = "GREEN"; break;
+                case BLUE:  cname = "BLUE";  break;
+                default:    break;
+            }
+            char buf[32];
+            snprintf(buf, sizeof buf, "NEAREST,%s", cname);
+            send_message(buf);
+            if (mon_was_on) exp_mon_start();
         }
 
             else

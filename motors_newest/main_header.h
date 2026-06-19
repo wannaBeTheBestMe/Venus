@@ -262,78 +262,49 @@ static void wait_steps_done(void)
 }
 
 // ======================================================
-// COLOR SENSOR (TCS frequency-based)
+// COLOR SENSOR (TCS3200, frequency-based, downward)
+// All primitives, channel consts, cal arrays, structs, and
+// colour-space conversions now live in tcs3200.h (included
+// below). This section keeps only:
+//   • the #defines tcs3200.h needs (already above: S0-S3,
+//     SENSOR_OUT, RED_MIN/MAX … CLEAR_MIN/MAX)
+//   • SENSOR_SETTLE_MS / DETECT_SAMPLES / CAL_SAMPLES
+//     (tcs3200.h reads them, so they must come first)
+//   • read_channel_raw / read_channel_refs (CALBLACK only)
+//   • cal_save / cal_load / cal_forget (persistence)
+//   • detect_black re-based on tcs3200_read_clear_fast()
 // ======================================================
 
-static uint32_t pulseIn_LOW(int pin)
-{
-    const uint32_t TIMEOUT_US = 1000000;
+// ---- robust-read tuning (black-detection hardening) ----
+// DETECT_SAMPLES / CAL_SAMPLES are consumed by tcs3200.h.
+#define SENSOR_SETTLE_MS  10   // photodiode-filter stabilize time before measuring
+#define DETECT_SAMPLES     5   // median samples per cliff read (rejects preemption outliers)
+#define CAL_SAMPLES        5   // median samples per calibration-reference read
 
-    uint32_t elapsed = 0;
+#include "tcs3200.h"
 
-    while (gpio_get_level(pin) == GPIO_LEVEL_LOW)
-    {
-        elapsed++;
-        if (elapsed > TIMEOUT_US) return 0;
-    }
-
-    elapsed = 0;
-
-    while (gpio_get_level(pin) == GPIO_LEVEL_HIGH)
-    {
-        elapsed++;
-        if (elapsed > TIMEOUT_US) return 0;
-    }
-
-    struct timespec t0, t1;
-
-    clock_gettime(CLOCK_MONOTONIC, &t0);
-
-    while (gpio_get_level(pin) == GPIO_LEVEL_LOW) {}
-
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-
-    return (uint32_t)(
-        (t1.tv_sec  - t0.tv_sec)  * 1000000UL +
-        (t1.tv_nsec - t0.tv_nsec) / 1000UL
-    );
-}
-
-static long map_value(long x,
-                      long in_min,
-                      long in_max,
-                      long out_min,
-                      long out_max)
-{
-    if (in_max == in_min) return out_min;   // degenerate band -> safe default (avoid /0)
-    return (x - in_min) *
-           (out_max - out_min) /
-           (in_max - in_min) +
-           out_min;
-}
-
-// ---- runtime TCS3200 black calibration (overrides defaults for this run) ----
-// Channels: 0=R, 1=G, 2=B, 3=CLEAR (unfiltered). cal_min = white-reference pulse
-// (->255), cal_max = black-reference pulse (->0). detect_black uses the CLEAR
-// channel only (best single luminance signal, 1 read instead of 3). RGB entries
-// are kept so CALBLACK can sample/log them for reference. Set by CALBLACK; must
-// be calibrated for the clear default to be reliable.
-#define CAL_CLEAR 3
-static long cal_min[4] = { RED_MIN,  GREEN_MIN, BLUE_MIN, CLEAR_MIN };
-static long cal_max[4] = { RED_MAX,  GREEN_MAX, BLUE_MAX, CLEAR_MAX };
-static int  cal_black_thresh = 150;
+// NOTE: map_value / clamp255 / select_channel / median_pulse_n / pulseIn_LOW
+// now live in tcs3200.h with tcs3200_ prefixes. No forwarding shims are defined
+// here: detect_black goes through tcs3200_read_clear_fast() (which uses
+// tcs3200_clamp255/tcs3200_map_value internally), and nothing else in this file
+// needs the bare names. A clamp255(long) shim in particular would CONFLICT with
+// 3_sensors_header.h's existing clamp255(float) (same name, different signature,
+// same translation unit) and break the build, so it is deliberately absent —
+// use tcs3200_clamp255 here if a clamp is ever needed.
 
 // ---- persistent calibration (survives reboots) ----
-// CALBLACK writes the calibrated CLEAR channel here; loaded at boot. The
-// compile-time #defines remain the immutable "original" that CALRESET restores
-// (CALRESET also deletes this file so the next boot uses the defaults).
+// CALBLACK writes the calibrated CLEAR channel here; loaded at boot.
+// The compile-time #defines remain the immutable "originals" that
+// CALRESET restores (it also deletes the file so next boot = defaults).
+// cal_min / cal_max / cal_black_thresh are macros into g_tcs (tcs3200.h).
 #define CAL_FILE "/home/student/calblack.cfg"
 
 static void cal_save(void)
 {
     FILE *f = fopen(CAL_FILE, "w");
     if (!f) { log_msg("CAL save FAILED (cannot open %s)", CAL_FILE); return; }
-    fprintf(f, "%ld %ld %d\n", cal_min[CAL_CLEAR], cal_max[CAL_CLEAR], cal_black_thresh);
+    fprintf(f, "%ld %ld %d\n",
+            cal_min[CAL_CLEAR], cal_max[CAL_CLEAR], cal_black_thresh);
     fclose(f);
     log_msg("CAL saved to %s", CAL_FILE);
 }
@@ -362,90 +333,21 @@ static void cal_forget(void)
     remove(CAL_FILE);   // ignore failure (e.g. file absent)
 }
 
-// ---- robust-read tuning (black-detection hardening) ----
-#define SENSOR_SETTLE_MS  10   // photodiode-filter stabilize time AFTER a channel change
-#define DETECT_SAMPLES     5   // median samples per cliff read (rejects scheduler-preemption outliers)
-#define CAL_SAMPLES        5   // median samples per calibration-reference read
-
-// Select a channel's photodiode filter (S2/S3) and let the output settle.
-// Settle is done HERE, BEFORE measuring — the previous code delayed AFTER the read,
-// so the first read of any newly-selected channel was unsettled.
-static void select_channel(int ch)
-{
-    switch (ch)
-    {
-        case 0: gpio_set_level(S2, GPIO_LEVEL_LOW);  gpio_set_level(S3, GPIO_LEVEL_LOW);  break; // R
-        case 1: gpio_set_level(S2, GPIO_LEVEL_HIGH); gpio_set_level(S3, GPIO_LEVEL_HIGH); break; // G
-        case 2: gpio_set_level(S2, GPIO_LEVEL_LOW);  gpio_set_level(S3, GPIO_LEVEL_HIGH); break; // B
-        default: gpio_set_level(S2, GPIO_LEVEL_HIGH); gpio_set_level(S3, GPIO_LEVEL_LOW); break; // CLEAR
-    }
-    delay_ms(SENSOR_SETTLE_MS);
-}
-
-// Median of n LOW-pulse reads on the ALREADY-SELECTED channel; drops pulseIn
-// timeouts (0). The single busy-wait pulse measurement (pulseIn_LOW) is corrupted
-// when the OS preempts the thread mid-measurement: the gap inflates the reading,
-// and an inflated CLEAR pulse maps toward black -> false positive on white. The
-// MEDIAN rejects such outliers in BOTH directions, so it kills the inflation
-// false-positives WITHOUT letting a single spuriously-short read fake a white
-// reading over black (i.e. it does not introduce false negatives). Returns 0 only
-// if every read timed out (maps to white via map_value -> no false cliff).
-static long median_pulse_n(int n)
-{
-    long s[16];
-    int  m = 0;
-    if (n > 16) n = 16;
-    for (int i = 0; i < n; i++)
-    {
-        long f = (long)pulseIn_LOW(SENSOR_OUT);
-        if (f > 0) s[m++] = f;
-    }
-    if (m == 0) return 0;
-    for (int i = 1; i < m; i++)            // insertion sort (tiny m)
-    {
-        long k = s[i]; int j = i - 1;
-        while (j >= 0 && s[j] > k) { s[j + 1] = s[j]; j--; }
-        s[j + 1] = k;
-    }
-    return s[m / 2];
-}
-
-// Robust single-channel read for CALIBRATION references: select + settle + median.
-// ch: 0=R,1=G,2=B,3=CLEAR. The median makes each captured reference robust to a
-// stray (preempted) sample that would otherwise skew the white/black band.
+// Robust single-channel read for CALIBRATION: select + settle + median.
+// ch: 0=R, 1=G, 2=B, 3=CLEAR.  Delegates to the module primitives.
 static long read_channel_raw(int ch)
 {
-    select_channel(ch);
-    return median_pulse_n(CAL_SAMPLES);
+    tcs3200_select_channel(ch, true);
+    return tcs3200_median_pulse_n(CAL_SAMPLES);
 }
 
-// Black detection from the CLEAR channel only: black = clear intensity below the
-// threshold. Uses a MEDIAN of DETECT_SAMPLES pulses to reject scheduler-preemption
-// outliers (the root cause of false-positives-on-white). NO per-call settle: this
-// is polled in tight loops (move_batch_until stop-fn) and the monitor keeps CLEAR
-// selected, so we just re-assert S2/S3=CLEAR (idempotent, no transient) and read.
-// A single stale/outlier read is absorbed by the median here AND by the monitor's
-// consecutive-confirmation (see exp_black_monitor). This is also FASTER than the
-// old path (which carried a hidden delay_ms(10)), so the cliff stop is more prompt.
-static int detect_black(void)
-{
-    gpio_set_level(S2, GPIO_LEVEL_HIGH);   // CLEAR = S2 high, S3 low (idempotent)
-    gpio_set_level(S3, GPIO_LEVEL_LOW);
-    long freq = median_pulse_n(DETECT_SAMPLES);
-    int  v = clamp255(map_value(freq, cal_min[CAL_CLEAR], cal_max[CAL_CLEAR], 255, 0));
-
-    // printf("CLR raw=%ld v=%d\n", freq, v);   // diagnostic: enable to see preemption spikes
-
-    return (v < cal_black_thresh) ? 1 : 0;
-}
-
-// Average each channel's pulse width over dur_ms, dropping pulseIn timeouts (0).
-// out[ch] = average (or 0 if too few valid samples). Returns 1 if all channels OK.
+// Average each channel's pulse width over dur_ms, dropping timeouts (0).
+// out[ch] = average (or 0 if too few valid samples). Returns 1 if all OK.
 static int read_channel_refs(long out[4], int dur_ms)
 {
     long sum[4] = {0, 0, 0, 0};
     int  cnt[4] = {0, 0, 0, 0};
-    int  rounds = dur_ms / 40;          // ~40-42 ms per full R/G/B/Clear pass (settle-dominated)
+    int  rounds = dur_ms / 40;   // ~40-42 ms per full R/G/B/Clear pass (settle-dominated)
     if (rounds < 1) rounds = 1;
 
     for (int i = 0; i < rounds; i++)
@@ -462,6 +364,24 @@ static int read_channel_refs(long out[4], int dur_ms)
         else out[ch] = sum[ch] / cnt[ch];
     }
     return ok;
+}
+
+// Black detection from the CLEAR channel only: black = clear intensity below the
+// threshold. Re-based onto tcs3200_read_clear_fast() — OBSERVABLE BEHAVIOUR IS
+// IDENTICAL to the original:
+//   • CLEAR channel only (S2=H, S3=L re-asserted idempotently, NO settle delay)
+//   • median of DETECT_SAMPLES (scheduler-preemption hardening, false-black fix)
+//   • fail-safe: freq=0 (all timeouts) → map_value → 255 → NOT black (white path)
+//   • threshold: v < cal_black_thresh  (same comparison, same variable)
+// The cliff monitor (exp_black_monitor) and BLACK_CONFIRM debounce are in explore.h
+// and are not touched; they call detect_black() through the same signature.
+static int detect_black(void)
+{
+    int v = tcs3200_read_clear_fast();
+
+    // printf("CLR v=%d\n", v);   // diagnostic: enable to see preemption spikes
+
+    return (v < cal_black_thresh) ? 1 : 0;
 }
 
 // ======================================================

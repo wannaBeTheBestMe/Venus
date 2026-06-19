@@ -43,13 +43,24 @@ unchanged — *all black still halts forward motion the instant it is seen*; cla
 a mapping/visualization layer.
 
 ## 3. Sensors
-- **Downward TCS3200** — black detection (cliffs/boundary), **clear (unfiltered) channel** only
-  (black → low reading). Mounted **ahead of the wheels** → lookahead before a wheel reaches an edge.
-  Each read is a **median of `DETECT_SAMPLES` pulse measurements** (`median_pulse_n`): the single
-  busy-wait pulse timing (`pulseIn_LOW`) is corrupted when the OS preempts the monitor thread
+- **Downward TCS3200** — a full-feature colour sensor used primarily for **black detection**
+  (cliffs/boundary). Managed entirely by **`motors_newest/tcs3200.h`** (header-only C module,
+  feature-parity with github.com/nthnn/TCS3200). The module owns all GPIO primitives, calibration
+  arrays, colour-space conversions, and the global state struct `g_tcs`. `main_header.h` and `main.c`
+  call the module API; `detect_black()` in `main_header.h` is re-based onto
+  `tcs3200_read_clear_fast()`.
+
+  Black detection uses the **clear (unfiltered) channel** only (black → low reading). Mounted
+  **ahead of the wheels** → lookahead before a wheel reaches an edge. Each read is a **median of
+  `DETECT_SAMPLES` pulse measurements** (`tcs3200_median_pulse_n`): the single busy-wait pulse
+  timing (`tcs3200_pulseIn_LOW`) is corrupted when the OS preempts the monitor thread
   mid-measurement — the gap inflates the reading, and an inflated clear pulse maps toward black
   (false positive on white). The median rejects those outliers in both directions, removing the
-  false positives without risking a false negative. (Filter-settle now happens *before* the read.)
+  false positives without risking a false negative. (Filter-settle happens *before* the read;
+  `detect_black` keeps CLEAR selected and re-asserts it idempotently with no delay, so cliff
+  polling stays fast.) `integration_time` = median sample count N (API parity with the original).
+  Frequency scaling (S0/S1) is controlled via `tcs3200_frequency_scaling()`; boot default is
+  `TCS3200_SCALING_2PCT` (S0=H, S1=L — preserves the original hardcoded GPIO levels).
 - **Forward VL53L0X** — objects/obstacles ahead. Range ≤ 500 mm, **wide ~25° cone**.
 - **Overhead VL53L0X** (≤ 90 mm) — object **size** classification once approached.
 - **Front TCS34725** — rock **color** (red/green/blue/black/white).
@@ -231,6 +242,14 @@ Live contacts show as faint amber dots as they arrive.
 
 ## 10. Commands
 - **`EXPLORE`** — the full autonomous loop (stop with `S`).
+- **TCS3200 diagnostic/demo commands** (added with feature-parity refactor; pause the cliff monitor
+  while reading, then restore it): `RGB` (emit `RGB,r,g,b` — calibrated 0-255 per channel);
+  `HSV` (emit `HSV,h,s,v`); `CMYK` (emit `CMYK,c,m,y,k`); `SCALE,<0-3>` (set frequency scaling:
+  0=power-down, 1=2 %, 2=20 % default, 3=100 %); `INTEG,<n>` (set integration time = median
+  sample count, 1-16); `WB` (capture white-balance reference, emit `WB,r,g,b`); `CHROMA` (emit
+  `CHROMA,f`); `DOM` (emit `DOM,RED|GREEN|BLUE` — dominant channel); `NEAREST` (emit
+  `NEAREST,WHITE|BLACK|RED|GREEN|BLUE` — classify current colour against 5 arena references by
+  Euclidean RGB distance).
 - **Per-behavior test sub-commands:** `CALBLACK`/`CALRESET`, `CLIFFCHK` (live black readings),
   `MON`/`MONOFF` (cliff monitor), `HU2` (drift-correction), `SWEEPQ` (sweep + report objects),
   `EXP1` (approach+classify one object), `RET` (out-and-back), `ADV` (monitored 300 mm advance),
