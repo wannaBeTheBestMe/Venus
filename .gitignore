@@ -5,3 +5,4 @@ __pycache__/
 *.o
 *.d
 motors_newest/main
+motors_mux/main
