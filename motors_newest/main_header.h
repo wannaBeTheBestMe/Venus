@@ -459,53 +459,6 @@ static void turn_180(void)
 }
 
 // ======================================================
-// MUX (unused in non-mux build, kept for compatibility)
-// ======================================================
-
-int tcs_channel = -1;
-int vl53_channel = -1;
-
-bool mux_select_channel(uint8_t channel)
-{
-    uint8_t mux_state = 1 << channel;
-    return iic_write_register(IIC0, PCA9548A_ADDR, 0x00, &mux_state, 1);
-}
-
-int detect_sensors(void)
-{
-    for (int ch = 0; ch < 8; ch++)
-    {
-        mux_select_channel(ch);
-        sleep_msec(50);
-
-        uint8_t id = 0;
-
-        if (!iic_read_register(IIC0, SENSOR_ADDR, TCS_REG_ID, &id, 1))
-        {
-            if (id == 0x44 || id == 0x4D)
-            {
-                tcs_channel = ch;
-                printf("TCS3472 found on channel %d, ID = 0x%02X\n", ch, id);
-            }
-        }
-
-        if (!iic_read_register(IIC0, SENSOR_ADDR, VL53_REG_ID, &id, 1))
-        {
-            if (id == 0xEE)
-            {
-                vl53_channel = ch;
-                printf("VL53L0X found on channel %d, ID = 0x%02X\n", ch, id);
-            }
-        }
-    }
-
-    if (tcs_channel < 0) { printf("ERROR: TCS3472 not found\n"); return 1; }
-    if (vl53_channel < 0) { printf("ERROR: VL53L0X not found\n"); return 1; }
-
-    return 0;
-}
-
-// ======================================================
 // TURN DEGREE (arc movement primitive)
 // ======================================================
 
