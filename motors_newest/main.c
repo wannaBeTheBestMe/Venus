@@ -399,7 +399,9 @@ int main(void)
 
                     if (x < 0)
                     {
+                        turn_guard_begin();
                         turn_180();
+                        turn_guard_end();
 
                         wait_motion(2000);
 
@@ -465,7 +467,9 @@ int main(void)
             // =========================
             else if(strcmp(MSG, "U") == 0)
             {
+                turn_guard_begin();
                 turn_180();
+                turn_guard_end();
 
                 wait_motion(100);
 
@@ -490,7 +494,9 @@ int main(void)
                 }
                 else
                 {
+                    turn_guard_begin();
                     turn_right_90();
+                    turn_guard_end();
                     wait_motion(100);
                     rotate_orientation(&ori, 90.0f);
                     ori.theta = 0.0f;
@@ -511,6 +517,8 @@ int main(void)
                 }
                 else
                 {
+                    // L not gated: turn_left_90 translates (move_forward) before rotating,
+                    // so gating would suspend detection across a forward move; leave detection active.
                     turn_left_90();
                     wait_motion(100);
                     rotate_orientation(&ori, -90.0f);

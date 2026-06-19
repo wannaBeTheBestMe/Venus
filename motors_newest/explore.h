@@ -83,7 +83,8 @@ typedef struct { float rel_deg; int32_t dist_mm; } exp_obj_t;
 // Background black-monitor thread (GPIO TCS3200 only -> no I2C
 // contention with the forward/overhead distance sensors).
 // ------------------------------------------------------
-static volatile int g_black   = 0;   // set by the monitor thread
+static volatile int g_black         = 0;   // set by the monitor thread
+static volatile int g_black_suspend = 0;   // >0 => monitor must not latch (suspend during turns)
 static volatile int g_mon_run = 0;
 static volatile int g_stop    = 0;   // operator "S"
 static pthread_t    g_mon_thread;
@@ -94,6 +95,7 @@ static void *exp_black_monitor(void *arg)
     int consec = 0;                       // consecutive black reads
     while (g_mon_run)
     {
+        if (g_black_suspend) { consec = 0; sleep_msec(EXP_MON_SLEEP_MS); continue; }
         if (detect_black())
         {
             if (++consec >= BLACK_CONFIRM) g_black = 1;   // latch only after N in a row
@@ -129,6 +131,13 @@ static int exp_check(void)
     return 0;
 }
 
+// Re-entrant guard: suspend cliff-latching during in-place turns.
+// Only the outermost begin/end pair clears g_black to avoid per-micro-step churn.
+// turn_guard_end clears g_black so the monitor re-confirms a real ahead-cliff
+// (within BLACK_CONFIRM reads) before the next forward command relies on it.
+static void turn_guard_begin(void) { if (g_black_suspend++ == 0) g_black = 0; }
+static void turn_guard_end(void)   { if (--g_black_suspend == 0) g_black = 0; }
+
 // ------------------------------------------------------
 // Rotation helpers (ori bookkeeping kept in sync).
 // ------------------------------------------------------
@@ -137,12 +146,14 @@ static int exp_check(void)
 static void exp_rotate_deg(orientation_t *ori, float deg)
 {
     int s = (int)(fabsf(deg) * (float)TURN_90_STEPS_US / 90.0f);   // no-slip count (see turn_180)
-    if (s <= 0) return;
+    if (s <= 0) return;                   // no turn => no guard
+    turn_guard_begin();
     stepper_set_speed(SPEED_ULTRA_SLOW, SPEED_ULTRA_SLOW);
     if (deg >= 0) stepper_steps(-s, s);   // CW
     else          stepper_steps(s, -s);   // CCW
     wait_steps_done();
     rotate_orientation(ori, deg);
+    turn_guard_end();
 }
 
 // Rotate by a relative offset using the SAME micro-step primitive the sweep
@@ -151,11 +162,14 @@ static void exp_rotate_deg(orientation_t *ori, float deg)
 static void exp_rotate_rel(orientation_t *ori, float rel)
 {
     int n = (int)(rel < 0 ? -rel : rel);
+    if (n == 0) return;                   // no turn => no guard
+    turn_guard_begin();
     for (int i = 0; i < n; i++)
     {
         if (rel >= 0) { turn_degree();           rotate_orientation(ori, 1.0f); }
         else          { turn_degree_other_way(); rotate_orientation(ori, -1.0f); }
     }
+    turn_guard_end();
 }
 
 // ------------------------------------------------------

@@ -101,6 +101,18 @@ The **same `cal_loaded` guard** that gates the cliff-monitor auto-start also gat
 uncalibrated → monitor OFF *and* no autonomous explore (a single consistent safety gate).
 Recovery from a black halt is a **reverse or turn** — intentionally *not* gated.
 
+**In-place turns suspend cliff latching** via a re-entrant counter `g_black_suspend` (> 0 → monitor
+skips `detect_black`, resets the consecutive-black debounce, and loops). Guard helpers
+`turn_guard_begin/end` bracket each reorientation turn (R, L, U, the two `turn_180()` calls in the
+MOVE handler, and the `exp_rotate_deg` / `exp_rotate_rel` explore helpers). Only the **outermost**
+begin/end pair clears `g_black` — nested turns don't churn it. `turn_guard_end` clears `g_black` so
+the monitor re-confirms a real ahead-cliff (within `BLACK_CONFIRM` ≈ 60 ms) before the next forward
+command relies on it. The **sweep rotation** (`sweep_rotate`) is intentionally **not** gated —
+`sweep_collect` and `escape_scan` rely on black during the sweep for abort / side-selection logic.
+Tradeoff: a cliff directly under a wheel mid-rotation is not caught until the turn ends; mitigant is
+that turns are in-place and follow a stop (no translation toward an edge), and `turn_guard_end`
+re-arms detection before any forward move — the same risk already accepted for recovery turns.
+
 **Latched-flag lifecycle (avoid stale-disable across commands):** both `g_stop` (operator `S`,
 latched in `exp_check`) and `g_black` (sticky-set by the monitor, never self-cleared) persist
 until explicitly reset. To stop a stale flag from silently disabling a freshly-issued command:
